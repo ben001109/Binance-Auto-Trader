@@ -1,0 +1,156 @@
+/* src/bat/tui/styles.tcss */
+
+Screen {
+    /* 改用水平佈局，左邊一個，右邊一個，自動填滿 */
+    layout: horizontal;
+}
+
+/* 左側邊欄 */
+#sidebar {
+width: 32;
+height: 100%;
+background: $panel;
+border-right: vkey $accent;
+/* 不需 dock，因為在 horizontal 佈局中它自然會排在左邊 */
+overflow-y: auto;
+padding: 1;
+}
+
+#sidebar > Input,
+#sidebar > Select {
+width: 100%;
+margin-bottom: 1;
+}
+
+#sidebar > Button {
+width: 100%;
+margin-bottom: 1;
+}
+
+#user_info {
+width: 100%;
+margin-top: 1;
+padding: 1;
+background: $surface;
+border: solid $accent;
+}
+
+/* 右側內容區 */
+#content {
+/* 1fr 代表佔據所有「剩餘」的空間 */
+width: 1fr;
+height: 100%;
+padding: 1;
+layout: vertical;
+}
+
+#tab_bar {
+    height: 3;
+    layout: horizontal;
+    margin-bottom: 1;
+}
+
+.tab_button {
+    width: 1fr;
+    margin-right: 1;
+}
+
+#tab_trade,
+#tab_wallet {
+    height: 1fr;
+    layout: vertical;
+}
+
+#tab_charts,
+#tab_market {
+    height: 1fr;
+    layout: vertical;
+}
+
+#trade_info,
+#wallet_info {
+    width: 100%;
+    margin-bottom: 1;
+    padding: 1;
+    background: $surface;
+    border: solid $accent;
+}
+
+#trade_records {
+    width: 100%;
+    margin-bottom: 1;
+    padding: 1;
+    background: $surface;
+    border: solid $accent;
+    height: 6;
+    overflow-y: auto;
+}
+
+#market_info {
+    width: 100%;
+    margin-bottom: 1;
+    padding: 1;
+    background: $surface;
+    border: solid $accent;
+}
+
+/* 日誌區 */
+RichLog {
+    background: $surface;
+    color: $text;
+    border: solid $accent;
+    height: 1fr;
+
+    /* 關鍵修正：改為 100% 讓它填滿 #content 的寬度 */
+    width: 100%;
+
+    scrollbar-gutter: stable;
+}
+
+#trade_info {
+    height: 5;
+}
+
+#charts {
+    height: 28;
+    margin-bottom: 1;
+}
+
+.chart_title {
+    text-style: bold;
+    height: 1;
+    margin-top: 1;
+}
+
+#train_status {
+    height: 1;
+    width: 100%;
+    color: $text;
+    background: $surface;
+    padding: 0 1;
+}
+
+Sparkline {
+    height: 2;
+    width: 100%;
+    color: $text;
+    background: $surface;
+}
+
+LineChart {
+    height: 6;
+    width: 100%;
+    color: $text;
+    background: $surface;
+}
+
+/* 標題 */
+.title {
+    content-align: center middle;
+    text-style: bold;
+    height: 3;
+    background: $primary;
+    color: white;
+    margin-bottom: 1;
+    width: 100%; /* 確保標題也是滿版 */
+}
