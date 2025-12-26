@@ -138,14 +138,14 @@ class CryptoApp(App):
                         yield Button("🧪 開始模擬蒐集", id="btn_simulate", variant="primary")
                         yield Button("🧠 訓練模型", id="btn_train", variant="warning")
                         yield Button("🧹 重置訓練進度", id="btn_reset_train", variant="default")
+                yield Label("訓練狀態", classes="chart_title")
+                yield Static("", id="train_status")
                 yield Label("訓練日誌", classes="title")
                 yield RichLog(id="train_log", highlight=True, markup=True)
 
             with Container(id="tab_charts"):
                 yield Label("圖表資訊", classes="title")
                 with Container(id="charts"):
-                    yield Label("訓練狀態", classes="chart_title")
-                    yield Static("", id="train_status")
                     yield Label("價格走勢", classes="chart_title")
                     yield LineChart(id="chart_price")
                     yield Label("訓練 Loss", classes="chart_title")
