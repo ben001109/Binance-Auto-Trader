@@ -448,10 +448,10 @@ class CryptoApp(App):
                                 f"{decision.confidence:.6f}",
                                 f"{decision.current_price:.6f}",
                                 f"{decision.predicted_price:.6f}",
-                                f"{(decision.predicted_price - decision.current_price) / decision.current_price:.6f}"
+                                f"{(decision.predicted_price - decision.current_price) / decision.current_price:.4%}"
                                 if decision.current_price
-                                else "0.000000",
-                                f"{self._actual_return_from_klines(klines):.6f}",
+                                else "0.0000%",
+                                f"{self._actual_return_from_klines(klines):.4%}",
                                 f"{decision.invest_amount:.6f}",
                                 f"{market_vol:.6f}",
                                 f"{risk.stop_loss:.6f}" if risk else "",
@@ -521,6 +521,7 @@ class CryptoApp(App):
                     self.saved_symbol = target
                 else:
                     select.value = symbols[0]
+            self._refresh_sell_asset_options()
             self.log_msg(f">>> 交易對更新完成，共 {len(symbols)} 筆")
         except Exception as exc:
             self.log_error(f"[bold red]❌ 取得交易對失敗: {exc}[/]")
@@ -850,7 +851,63 @@ class CryptoApp(App):
         label = "排序: 餘額" if self.wallet_sort_mode == "amount" else "排序: 字母"
         button = self.query_one("#btn_wallet_sort", Button)
         button.label = label
+    def _refresh_sell_asset_options(self) -> None:
+        assets = sorted(self.latest_balances.keys()) if self.latest_balances else ["USDT"]
+        valid_assets = []
+        for asset in assets:
+            if asset == "USDT":
+                valid_assets.append(asset)
+            elif not self.usdt_symbols or f"{asset}USDT" in self.usdt_symbols:
+                valid_assets.append(asset)
+        if not valid_assets:
+            valid_assets = ["USDT"]
+        options = [(a, a) for a in valid_assets]
+        select = self.query_one("#select_sell_asset", Select)
+        current = select.value
+        select.set_options(options)
+        if current in valid_assets and current != Select.BLANK:
+            select.value = current
+        else:
+            select.value = valid_assets[0]
 
+    def _poll_sell_price(self) -> None:
+        if self.price_polling:
+            return
+        self.price_polling = True
+        self.run_worker(self._update_sell_price(), exclusive=False)
+
+    async def _update_sell_price(self) -> None:
+        try:
+            asset = self.query_one("#select_sell_asset", Select).value
+            if not asset or asset == Select.BLANK:
+                self.query_one("#sell_price", Static).update("現價: -")
+                return
+            if asset == "USDT":
+                self.query_one("#sell_price", Static).update("現價: 1.00000000")
+                return
+            if self.usdt_symbols and f"{asset}USDT" not in self.usdt_symbols:
+                self.query_one("#sell_price", Static).update("現價: -")
+                return
+            _, _, _, _, is_testnet = self._read_inputs()
+            if not self.price_broker or self.price_broker.is_testnet != is_testnet:
+                if self.price_broker:
+                    await self.price_broker.close()
+                self.price_broker = BinanceBroker(is_testnet=is_testnet)
+                await self.price_broker.init_client()
+            symbol = f"{asset}USDT"
+            klines = await self.price_broker.get_klines(symbol=symbol, interval="1m", limit=1)
+            if klines:
+                price = float(klines[-1][4])
+                self.query_one("#sell_price", Static).update(f"現價: {price:.8f}")
+        except Exception as exc:
+            self.log_error(f"[賣出] 取得現價失敗: {exc}")
+        finally:
+            self.price_polling = False
+
+    async def _close_price_broker(self) -> None:
+        if self.price_broker:
+            await self.price_broker.close()
+            self.price_broker = None
     def _update_trade_records(self) -> None:
         path = "data/testnet_trades.csv"
         if not os.path.exists(path):
@@ -873,22 +930,35 @@ class CryptoApp(App):
                 "預期收益": "expected",
                 "實際收益": "actual",
                 "投入金額": "invest",
+                "訂單ID": "order_id",
+                "狀態": "status",
+                "成交數量": "executed_qty",
+                "成交金額": "quote_qty",
             }
-            for row in rows[-5:]:
+            for row in rows[-30:]:
                 cols = row.split(",")
                 data = dict(zip(header, cols))
                 normalized = {key_map.get(k, k): v for k, v in data.items()}
                 ts = normalized.get("timestamp", "")
                 action = normalized.get("action", "")
+                if action in ("觀望", "HOLD"):
+                    continue
+                order_id = normalized.get("order_id", "")
+                status = normalized.get("status", "")
                 price = normalized.get("price", "")
                 qty = normalized.get("invest", "")
                 symbol = normalized.get("symbol", "")
                 expected = normalized.get("expected", "")
                 actual = normalized.get("actual", "")
+                executed = normalized.get("executed_qty", "")
+                quote = normalized.get("quote_qty", "")
+                if not order_id and not status:
+                    continue
                 lines.append(
-                    f"{ts} {symbol} {action} 價格={price} 投入={qty} 預期={expected} 實際={actual}"
+                    f"{ts} {symbol} {action} 價格={price} 投入={qty} "
+                    f"預期={expected} 實際={actual} 成交={executed} 金額={quote}"
                 )
-            self.query_one("#trade_records", Static).update("\n".join(lines))
+            self.query_one("#trade_records", Static).update("\n".join(lines) or "尚無成交紀錄")
             self._update_winrate_status(rows)
         except Exception:
             self.query_one("#trade_records", Static).update("成交紀錄讀取失敗")
