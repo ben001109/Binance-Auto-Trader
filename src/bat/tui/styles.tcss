@@ -88,6 +88,16 @@ layout: vertical;
     margin-bottom: 1;
 }
 
+#train_actions {
+    layout: vertical;
+    margin-bottom: 1;
+}
+
+#train_actions > Button {
+    width: 100%;
+    margin-bottom: 1;
+}
+
 #trade_info,
 #wallet_info {
     width: 100%;
