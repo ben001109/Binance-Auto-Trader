@@ -56,7 +56,8 @@ layout: vertical;
 }
 
 #tab_trade,
-#tab_wallet {
+#tab_wallet,
+#tab_train {
     height: 1fr;
     layout: vertical;
 }
@@ -65,6 +66,26 @@ layout: vertical;
 #tab_market {
     height: 1fr;
     layout: vertical;
+}
+
+#train_controls {
+    layout: horizontal;
+    margin-bottom: 1;
+}
+
+#train_controls_left,
+#train_controls_right {
+    width: 1fr;
+    margin-right: 1;
+}
+
+#train_controls_right > Button,
+#train_controls_left > Input,
+#train_controls_right > Input,
+#train_controls_right > Select,
+#train_controls_left > Select {
+    width: 100%;
+    margin-bottom: 1;
 }
 
 #trade_info,
