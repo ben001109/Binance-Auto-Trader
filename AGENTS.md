@@ -81,6 +81,20 @@ graph TD
 - **信心值**：使用 `max(softmax)` 作為信心百分比。
 - **決策閾值**：若信心值低於使用者設定門檻，決策會被強制改為觀望（source=filtered）。
 
+## 🧪 實驗性功能與版本規範
+
+- **實驗性功能規則**：所有實驗性功能只放在實驗分支，實驗完成後再決定是否合併主線。
+- **流程要求**：更新必須檢查後送 PR。
+- **版本標籤格式**：`v<major>.<minor>.<patch>-<channel>-<feature>`  
+  - `channel`：`dev` / `canary` / `ptb` / `exp`
+  - `feature`：該分支新增功能摘要（例：`train-tab`、`wallet-sell-ui`）
+- **目前版本分派**
+  - **主線 (stable)**：`v1.1.0`
+  - **dev**：`v1.1.1-dev-train-tab`
+  - **canary**：`v1.1.1-canary-train-tab`
+  - **ptb**：`v1.1.1-ptb-train-tab`
+  - **實驗 (RL 分支)**：`v1.1.1-exp-rl`
+
 ### 1. Product Manager (PM)
 - **目標**: 需求轉規格
 - **任務**
