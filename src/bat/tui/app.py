@@ -488,10 +488,10 @@ class CryptoApp(App):
                                 f"{decision.confidence:.6f}",
                                 f"{decision.current_price:.6f}",
                                 f"{decision.predicted_price:.6f}",
-                                f"{(decision.predicted_price - decision.current_price) / decision.current_price:.4%}"
+                                f"{(decision.predicted_price - decision.current_price) / decision.current_price:.6%}"
                                 if decision.current_price
-                                else "0.0000%",
-                                f"{self._actual_return_from_klines(klines):.4%}",
+                                else "0.000000%",
+                                f"{self._actual_return_from_klines(klines):.6%}",
                                 f"{decision.invest_amount:.6f}",
                                 f"{market_vol:.6f}",
                                 f"{risk.stop_loss:.6f}" if risk else "",
