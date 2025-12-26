@@ -123,6 +123,12 @@ class CryptoApp(App):
                 yield Label("錢包資訊", classes="title")
                 yield Button("顯示全部資產: 開", id="btn_wallet_filter", variant="primary")
                 yield Button("排序: 餘額", id="btn_wallet_sort", variant="default")
+                yield Label("賣出資產", classes="chart_title")
+                yield Select([("USDT", "USDT")], value="USDT", id="select_sell_asset")
+                yield Label("賣出數量", classes="chart_title")
+                yield Input(value="0", placeholder="輸入數量或 all", id="input_sell_amount")
+                yield Button("賣出", id="btn_sell_asset", variant="warning")
+                yield Static("現價: -", id="sell_price", markup=True)
                 yield Static("", id="wallet_info", markup=True)
 
             with Container(id="tab_charts"):
@@ -167,6 +173,7 @@ class CryptoApp(App):
         self.run_worker(self.action_init_fetch(), exclusive=False)
         self.run_worker(self.action_load_symbols(), exclusive=False)
         self._show_tab("trade")
+        self.set_interval(1.0, self._poll_sell_price)
 
     def log_msg(self, message: str) -> None:
         log_window = self.query_one("#log_window", RichLog)
@@ -202,6 +209,9 @@ class CryptoApp(App):
             return
         if btn_id == "btn_wallet_sort":
             self._toggle_wallet_sort()
+            return
+        if btn_id == "btn_sell_asset":
+            self.run_worker(self.action_sell_asset(), exclusive=True)
             return
         if btn_id == "btn_reset_train":
             self._reset_training_progress()
@@ -514,6 +524,7 @@ class CryptoApp(App):
                 if symbol and status == "TRADING" and symbol.endswith("USDT"):
                     symbols.append(symbol)
             symbols = sorted(set(symbols))
+            self.usdt_symbols = set(symbols)
             if symbols:
                 options = [(s, s) for s in symbols]
                 select = self.query_one("#select_symbol", Select)
@@ -549,6 +560,7 @@ class CryptoApp(App):
             label.update(self._mode_label_text())
             self.run_worker(self.action_load_symbols(), exclusive=False)
             self.run_worker(self.action_init_fetch(), exclusive=False)
+            self.run_worker(self._close_price_broker(), exclusive=False)
         elif event.select.id == "select_symbol":
             self.saved_symbol = event.value
         self._save_settings()
@@ -679,6 +691,7 @@ class CryptoApp(App):
             wallet_lines.append("餘額: 尚未連線")
         self.query_one("#trade_info", Static).update("\n".join(trade_lines))
         self.query_one("#wallet_info", Static).update("\n".join(wallet_lines))
+        self._refresh_sell_asset_options()
 
     def _user_info_text(self, balances: dict) -> str:
         return f"使用者: [bold]{conf.USER_NAME}[/]\n模式: {conf.TRADING_MODE}\n餘額: 尚未連線"
@@ -854,6 +867,7 @@ class CryptoApp(App):
         label = "排序: 餘額" if self.wallet_sort_mode == "amount" else "排序: 字母"
         button = self.query_one("#btn_wallet_sort", Button)
         button.label = label
+
     def _refresh_sell_asset_options(self) -> None:
         assets = sorted(self.latest_balances.keys()) if self.latest_balances else ["USDT"]
         valid_assets = []
@@ -979,6 +993,40 @@ class CryptoApp(App):
             self.log_msg("[訓練] 已清除 checkpoint，下一次訓練將重新開始")
         else:
             self.log_msg("[訓練] 無可清除的 checkpoint")
+
+    async def action_sell_asset(self) -> None:
+        asset = self.query_one("#select_sell_asset", Select).value
+        amount_str = self.query_one("#input_sell_amount", Input).value.strip()
+        if not asset or asset == "USDT":
+            self.log_error("[賣出] 請選擇非 USDT 資產")
+            return
+        balance = float(self.latest_balances.get(asset, 0.0))
+        if amount_str.lower() == "all":
+            amount = balance
+        else:
+            try:
+                amount = float(amount_str)
+            except ValueError:
+                self.log_error("[賣出] 數量格式錯誤")
+                return
+        if amount <= 0:
+            self.log_error("[賣出] 數量必須大於 0")
+            return
+        if amount > balance:
+            self.log_error("[賣出] 數量超過可用餘額")
+            return
+        _, _, _, _, is_testnet = self._read_inputs()
+        broker = BinanceBroker(is_testnet=is_testnet)
+        await broker.init_client()
+        try:
+            broker.symbol = f"{asset}USDT"
+            order = await broker.sell(quantity=amount)
+            if order is not None:
+                self.log_msg(f"[賣出] 已送出 {asset} 賣單: {amount}")
+            else:
+                self.log_error("[賣出] 送單失敗")
+        finally:
+            await broker.close()
 
     def _winrate_summary_line(self) -> str:
         stats = self._compute_win_rate("data/testnet_trades.csv", window=100)
