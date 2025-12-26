@@ -53,6 +53,9 @@ class CryptoApp(App):
     wallet_sort_mode = "amount"
     winrate_ok = False
     winrate_series = []
+    price_broker = None
+    price_polling = False
+    usdt_symbols = set()
 
     def compose(self) -> ComposeResult:
         yield Header()
