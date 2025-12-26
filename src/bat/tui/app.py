@@ -78,36 +78,18 @@ class CryptoApp(App):
             )
             yield Label("交易輪詢間隔", classes="chart_title")
             yield Input(value="1m", placeholder="輪詢間隔，如 10s/1m/120", id="input_poll_interval")
-            yield Label("模擬步數", classes="chart_title")
-            yield Input(value=str(conf.SIMULATION_STEPS), placeholder="模擬步數", id="input_sim_steps")
-            yield Label("顯存使用比例", classes="chart_title")
-            yield Input(value="0.5", placeholder="可用顯存比例 0.1-0.9", id="input_mem_fraction")
-            yield Label("Online 訓練間隔秒", classes="chart_title")
-            yield Input(value="1800", placeholder="Online 訓練間隔秒", id="input_online_interval")
-            yield Label("Online 波動倍率", classes="chart_title")
-            yield Input(value="1.8", placeholder="Online 波動倍率", id="input_online_vol_mult")
-            yield Label("Online 波動冷卻秒", classes="chart_title")
-            yield Input(value="600", placeholder="Online 波動冷卻秒", id="input_online_vol_cooldown")
-            yield Label("Online 最少成交筆", classes="chart_title")
-            yield Input(value="1", placeholder="Online 最少成交筆", id="input_online_min_trades")
-            yield Label("步進更新間隔", classes="chart_title")
-            yield Input(value="20", placeholder="步進更新間隔 (5-100)", id="input_status_every")
-            yield Label("Batch Size", classes="chart_title")
-            yield Input(value="64", placeholder="Batch Size (16-256)", id="input_batch_size")
             yield Label("模型信心門檻(%)", classes="chart_title")
             yield Input(value="55", placeholder="模型信心門檻(0-100)", id="input_confidence_threshold")
-            yield Button("🧪 開始模擬蒐集", id="btn_simulate", variant="primary")
-            yield Button("🧠 訓練模型", id="btn_train", variant="warning")
             yield Button("🚀 開始交易/查詢餘額", id="btn_paper", variant="success")
             yield Button("🤖 自動交易", id="btn_auto", variant="success")
             yield Button("🛑 停止/重置", id="btn_stop", variant="error")
-            yield Button("🧹 重置訓練進度", id="btn_reset_train", variant="default")
 
             yield Static(self._mode_label_text(), id="mode_label", markup=True)
         with Container(id="content"):
             with Container(id="tab_bar"):
                 yield Button("交易", id="btn_tab_trade", classes="tab_button", variant="primary")
                 yield Button("錢包", id="btn_tab_wallet", classes="tab_button", variant="default")
+                yield Button("訓練", id="btn_tab_train", classes="tab_button", variant="default")
                 yield Button("圖表", id="btn_tab_charts", classes="tab_button", variant="default")
                 yield Button("看盤", id="btn_tab_market", classes="tab_button", variant="default")
 
@@ -130,6 +112,34 @@ class CryptoApp(App):
                 yield Button("賣出", id="btn_sell_asset", variant="warning")
                 yield Static("現價: -", id="sell_price", markup=True)
                 yield Static("", id="wallet_info", markup=True)
+
+            with Container(id="tab_train"):
+                yield Label("訓練設定", classes="title")
+                with Container(id="train_controls"):
+                    with Container(id="train_controls_left"):
+                        yield Label("模擬步數", classes="chart_title")
+                        yield Input(value=str(conf.SIMULATION_STEPS), placeholder="模擬步數", id="input_sim_steps")
+                        yield Label("顯存使用比例", classes="chart_title")
+                        yield Input(value="0.5", placeholder="可用顯存比例 0.1-0.9", id="input_mem_fraction")
+                        yield Label("Batch Size", classes="chart_title")
+                        yield Input(value="64", placeholder="Batch Size (16-256)", id="input_batch_size")
+                        yield Label("步進更新間隔", classes="chart_title")
+                        yield Input(value="20", placeholder="步進更新間隔 (5-100)", id="input_status_every")
+                    with Container(id="train_controls_right"):
+                        yield Label("Online 訓練間隔秒", classes="chart_title")
+                        yield Input(value="1800", placeholder="Online 訓練間隔秒", id="input_online_interval")
+                        yield Label("Online 波動倍率", classes="chart_title")
+                        yield Input(value="1.8", placeholder="Online 波動倍率", id="input_online_vol_mult")
+                        yield Label("Online 波動冷卻秒", classes="chart_title")
+                        yield Input(value="600", placeholder="Online 波動冷卻秒", id="input_online_vol_cooldown")
+                        yield Label("Online 最少成交筆", classes="chart_title")
+                        yield Input(value="1", placeholder="Online 最少成交筆", id="input_online_min_trades")
+                        yield Label("訓練動作", classes="chart_title")
+                        yield Button("🧪 開始模擬蒐集", id="btn_simulate", variant="primary")
+                        yield Button("🧠 訓練模型", id="btn_train", variant="warning")
+                        yield Button("🧹 重置訓練進度", id="btn_reset_train", variant="default")
+                yield Label("訓練日誌", classes="title")
+                yield RichLog(id="train_log", highlight=True, markup=True)
 
             with Container(id="tab_charts"):
                 yield Label("圖表資訊", classes="title")
@@ -189,6 +199,20 @@ class CryptoApp(App):
         if hasattr(self, "logger"):
             self.logger.error(message)
 
+    def log_train(self, message: str) -> None:
+        train_log = self.query_one("#train_log", RichLog)
+        timestamp = datetime.now().strftime("%H:%M:%S")
+        train_log.write(f"[{timestamp}] {message}")
+        if hasattr(self, "logger"):
+            self.logger.info(message)
+
+    def log_train_error(self, message: str) -> None:
+        train_log = self.query_one("#train_log", RichLog)
+        timestamp = datetime.now().strftime("%H:%M:%S")
+        train_log.write(f"[{timestamp}] {message}")
+        if hasattr(self, "logger"):
+            self.logger.error(message)
+
     async def on_button_pressed(self, event: Button.Pressed) -> None:
         btn_id = event.button.id
 
@@ -197,6 +221,9 @@ class CryptoApp(App):
             return
         if btn_id == "btn_tab_wallet":
             self._show_tab("wallet")
+            return
+        if btn_id == "btn_tab_train":
+            self._show_tab("train")
             return
         if btn_id == "btn_tab_charts":
             self._show_tab("charts")
@@ -238,7 +265,7 @@ class CryptoApp(App):
     async def action_simulate_data(self):
         symbol, interval, poll_interval, sim_steps, is_testnet = self._read_inputs()
         if not is_testnet:
-            self.log_error("[bold red]❌ 模擬蒐集僅允許 Testnet[/]")
+            self.log_train_error("[bold red]❌ 模擬蒐集僅允許 Testnet[/]")
             return
         try:
             set_stop_training(False)
@@ -250,25 +277,25 @@ class CryptoApp(App):
                 trade_log_path="data/testnet_trades.csv",
                 is_testnet=True,
                 on_status=self._update_train_status,
-                on_log=self.log_msg,
+                on_log=self.log_train,
                 poll_interval=poll_interval,
                 confidence_threshold=self._confidence_threshold(),
                 progress_path="data/sim_progress.json",
                 progress_key="simulate",
             )
-            self.log_msg(f"[bold green]✅ 模擬完成！共 {count} 筆[/]")
+            self.log_train(f"[bold green]✅ 模擬完成！共 {count} 筆[/]")
         except Exception as e:
-            self.log_error(f"[bold red]❌ 模擬失敗: {e}[/]")
+            self.log_train_error(f"[bold red]❌ 模擬失敗: {e}[/]")
         finally:
             set_stop_training(False)
             await self._sync_time_offset()
 
     async def action_train_model(self):
         if self.train_loop_active:
-            self.log_msg("[bold yellow]⚠️ 訓練循環已在執行中[/]")
+            self.log_train("[bold yellow]⚠️ 訓練循環已在執行中[/]")
             return
         symbol, interval, poll_interval, sim_steps, _is_testnet = self._read_inputs()
-        self.log_msg(">>> [訓練] 啟動收集→背景訓練循環...")
+        self.log_train(">>> [訓練] 啟動收集→背景訓練循環...")
         try:
             set_stop_training(False)
             self.train_loop_active = True
@@ -278,9 +305,9 @@ class CryptoApp(App):
                 if sim_steps < conf.SEQ_LENGTH:
                     sim_steps = conf.SEQ_LENGTH
                     self.query_one("#input_sim_steps", Input).value = str(sim_steps)
-                    self.log_msg(f"[bold yellow]⚠️ 模擬步數已提升為 {sim_steps}[/]")
+                    self.log_train(f"[bold yellow]⚠️ 模擬步數已提升為 {sim_steps}[/]")
                 self._save_settings()
-                self.log_msg(f">>> [訓練] 新一輪收集開始 (目標 {sim_steps} 筆)...")
+                self.log_train(f">>> [訓練] 新一輪收集開始 (目標 {sim_steps} 筆)...")
                 count = await simulate_and_collect(
                     symbol=symbol,
                     interval=interval,
@@ -289,7 +316,7 @@ class CryptoApp(App):
                     trade_log_path="data/testnet_trades.csv",
                     is_testnet=True,
                     on_status=self._update_train_status,
-                    on_log=self.log_msg,
+                    on_log=self.log_train,
                     poll_interval=poll_interval,
                     confidence_threshold=self._confidence_threshold(),
                     progress_path="data/sim_progress.json",
@@ -300,17 +327,17 @@ class CryptoApp(App):
                 await self._maybe_sync_time()
                 total_count = self._history_count("data/history.csv")
                 if total_count < conf.SEQ_LENGTH:
-                    self.log_error(
+                    self.log_train_error(
                         f"[bold red]❌ 模擬資料不足({total_count}<{conf.SEQ_LENGTH})，繼續收集[/]"
                     )
                     continue
                 if self.background_training_task and not self.background_training_task.done():
-                    self.log_msg("[bold yellow]⚠️ 背景訓練仍在執行，先繼續收集[/]")
+                    self.log_train("[bold yellow]⚠️ 背景訓練仍在執行，先繼續收集[/]")
                     continue
-                self.log_msg(f">>> [訓練] 啟動背景訓練 (累積 {total_count} 筆)...")
+                self.log_train(f">>> [訓練] 啟動背景訓練 (累積 {total_count} 筆)...")
                 self.background_training_task = asyncio.create_task(self._run_training_cycle())
         except Exception as e:
-            self.log_error(f"[bold red]❌ 訓練失敗: {e}[/]")
+            self.log_train_error(f"[bold red]❌ 訓練失敗: {e}[/]")
         finally:
             self.train_loop_active = False
             set_stop_training(False)
@@ -339,20 +366,20 @@ class CryptoApp(App):
             )
             if result.equity_curve:
                 self._set_equity_series(result.equity_curve)
-            self.log_msg("[bold green]✅ 背景訓練完成[/]")
-            self.log_msg(
+            self.log_train("[bold green]✅ 背景訓練完成[/]")
+            self.log_train(
                 f">>> 回測總報酬: {result.total_return:.2%} | "
                 f"最大回撤: {result.max_drawdown:.2%} | "
                 f"虧損率: {result.loss_rate:.2%}"
             )
-            self.log_msg(
+            self.log_train(
                 f">>> 風控建議: SL {risk.stop_loss:.2%} / "
                 f"TP {risk.take_profit:.2%} / "
                 f"MaxDD {risk.max_dd_stop:.2%} / "
                 f"Splits {risk.position_splits}"
             )
         except Exception as e:
-            self.log_error(f"[bold red]❌ 背景訓練失敗: {e}[/]")
+            self.log_train_error(f"[bold red]❌ 背景訓練失敗: {e}[/]")
         finally:
             self.training_active = False
             set_stop_training(False)
@@ -823,18 +850,22 @@ class CryptoApp(App):
         self.current_tab = tab_name
         trade = self.query_one("#tab_trade", Container)
         wallet = self.query_one("#tab_wallet", Container)
+        train = self.query_one("#tab_train", Container)
         charts = self.query_one("#tab_charts", Container)
         market = self.query_one("#tab_market", Container)
         trade.display = tab_name == "trade"
         wallet.display = tab_name == "wallet"
+        train.display = tab_name == "train"
         charts.display = tab_name == "charts"
         market.display = tab_name == "market"
         btn_trade = self.query_one("#btn_tab_trade", Button)
         btn_wallet = self.query_one("#btn_tab_wallet", Button)
+        btn_train = self.query_one("#btn_tab_train", Button)
         btn_charts = self.query_one("#btn_tab_charts", Button)
         btn_market = self.query_one("#btn_tab_market", Button)
         btn_trade.variant = "primary" if tab_name == "trade" else "default"
         btn_wallet.variant = "primary" if tab_name == "wallet" else "default"
+        btn_train.variant = "primary" if tab_name == "train" else "default"
         btn_charts.variant = "primary" if tab_name == "charts" else "default"
         btn_market.variant = "primary" if tab_name == "market" else "default"
 
@@ -1451,7 +1482,7 @@ class CryptoApp(App):
     async def _start_online_training(self, reason: str) -> None:
         self.last_train_ts = datetime.now().timestamp()
         self.trade_events_since_train = 0
-        self.log_msg(f"[Online Train] 觸發訓練 ({reason})")
+        self.log_train(f"[Online Train] 觸發訓練 ({reason})")
         self.background_training_task = asyncio.create_task(self._run_online_training())
 
     async def _run_online_training(self) -> None:
@@ -1478,9 +1509,9 @@ class CryptoApp(App):
             )
             if result.equity_curve:
                 self._set_equity_series(result.equity_curve)
-            self.log_msg("[Online Train] 完成")
+            self.log_train("[Online Train] 完成")
         except Exception as exc:
-            self.log_error(f"[Online Train] 失敗: {exc}")
+            self.log_train_error(f"[Online Train] 失敗: {exc}")
         finally:
             self.training_active = False
             await monitor_task
@@ -1492,7 +1523,7 @@ class CryptoApp(App):
         while self.training_active:
             allocated = torch.cuda.memory_allocated() / (1024 ** 2)
             reserved = torch.cuda.memory_reserved() / (1024 ** 2)
-            self.log_msg(f"GPU 記憶體: allocated={allocated:.1f}MB reserved={reserved:.1f}MB")
+            self.log_train(f"GPU 記憶體: allocated={allocated:.1f}MB reserved={reserved:.1f}MB")
             if shutil.which("nvidia-smi"):
                 output = await asyncio.to_thread(
                     subprocess.check_output,
@@ -1504,7 +1535,7 @@ class CryptoApp(App):
                     text=True,
                 )
                 self._update_train_status({"gpu_util": output.strip()})
-                self.log_msg(f"GPU 使用率: {output.strip()}")
+                self.log_train(f"GPU 使用率: {output.strip()}")
             await asyncio.sleep(5)
 
     async def _sync_time_offset(self):
