@@ -76,6 +76,13 @@ layout: vertical;
     border: solid $accent;
 }
 
+#select_sell_asset,
+#input_sell_amount,
+#sell_price {
+    width: 100%;
+    margin-bottom: 1;
+}
+
 #trade_records {
     width: 100%;
     margin-bottom: 1;
