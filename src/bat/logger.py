@@ -122,9 +122,12 @@ def get_logger(name: str = "bat") -> logging.Logger:
     formatter = logging.Formatter(
         "%(asctime)s | %(levelname)s | %(name)s | %(message)s"
     )
+    debug_formatter = logging.Formatter(
+        "%(asctime)s | %(levelname)s | %(name)s | %(filename)s:%(lineno)d | %(funcName)s | %(message)s"
+    )
     info_handler.setFormatter(formatter)
     error_handler.setFormatter(formatter)
-    debug_handler.setFormatter(formatter)
+    debug_handler.setFormatter(debug_formatter)
 
     info_handler.setLevel(logging.INFO)
     error_handler.setLevel(logging.ERROR)

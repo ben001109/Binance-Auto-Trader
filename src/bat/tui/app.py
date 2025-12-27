@@ -196,12 +196,15 @@ class CryptoApp(App):
         if hasattr(self, "logger"):
             self.logger.info(message)
 
-    def log_error(self, message: str) -> None:
+    def log_error(self, message: str, exc: Exception | None = None) -> None:
         log_window = self.query_one("#log_window", RichLog)
         timestamp = datetime.now().strftime("%H:%M:%S")
         log_window.write(f"[{timestamp}] {message}")
         if hasattr(self, "logger"):
-            self.logger.error(message)
+            if exc:
+                self.logger.error(message, exc_info=exc)
+            else:
+                self.logger.error(message)
 
     def log_train(self, message: str) -> None:
         train_log = self.query_one("#train_log", RichLog)
@@ -210,12 +213,15 @@ class CryptoApp(App):
         if hasattr(self, "logger"):
             self.logger.info(message)
 
-    def log_train_error(self, message: str) -> None:
+    def log_train_error(self, message: str, exc: Exception | None = None) -> None:
         train_log = self.query_one("#train_log", RichLog)
         timestamp = datetime.now().strftime("%H:%M:%S")
         train_log.write(f"[{timestamp}] {message}")
         if hasattr(self, "logger"):
-            self.logger.error(message)
+            if exc:
+                self.logger.error(message, exc_info=exc)
+            else:
+                self.logger.error(message)
 
     async def on_button_pressed(self, event: Button.Pressed) -> None:
         btn_id = event.button.id
@@ -292,7 +298,7 @@ class CryptoApp(App):
             )
             self.log_train(f"[bold green]✅ 模擬完成！共 {count} 筆[/]")
         except Exception as e:
-            self.log_train_error(f"[bold red]❌ 模擬失敗: {e}[/]")
+            self.log_train_error(f"[bold red]❌ 模擬失敗: {e}[/]", e)
         finally:
             set_stop_training(False)
             await self._sync_time_offset()
@@ -357,7 +363,7 @@ class CryptoApp(App):
             )
             self.log_train(f"[bold green]✅ 歷史資料下載完成（已合併）{count} 筆[/]")
         except Exception as exc:
-            self.log_train_error(f"[bold red]❌ 歷史資料下載失敗: {exc}[/]")
+            self.log_train_error(f"[bold red]❌ 歷史資料下載失敗: {exc}[/]", exc)
 
     async def action_train_model(self):
         if self.train_loop_active:
@@ -415,7 +421,7 @@ class CryptoApp(App):
                 self.log_train(f">>> [訓練] 啟動背景訓練 (累積 {total_count} 筆)...")
                 self.background_training_task = asyncio.create_task(self._run_training_cycle())
         except Exception as e:
-            self.log_train_error(f"[bold red]❌ 訓練失敗: {e}[/]")
+            self.log_train_error(f"[bold red]❌ 訓練失敗: {e}[/]", e)
         finally:
             self.train_loop_active = False
             set_stop_training(False)
@@ -457,7 +463,7 @@ class CryptoApp(App):
                 f"Splits {risk.position_splits}"
             )
         except Exception as e:
-            self.log_train_error(f"[bold red]❌ 背景訓練失敗: {e}[/]")
+            self.log_train_error(f"[bold red]❌ 背景訓練失敗: {e}[/]", e)
         finally:
             self.training_active = False
             set_stop_training(False)
@@ -483,7 +489,7 @@ class CryptoApp(App):
                     self.log_msg(f"🏦 [bold cyan]{name} 餘額: {balance}[/]")
             self._update_user_info(balances)
         except Exception as e:
-            self.log_error(f"[bold red]❌ 錯誤: {e}[/]")
+            self.log_error(f"[bold red]❌ 錯誤: {e}[/]", e)
         finally:
             if "broker" in locals() and broker.client:
                 await broker.close()
@@ -612,7 +618,7 @@ class CryptoApp(App):
             self._update_trade_records()
             self._append_balance(balances.get("USDT", 0.0))
         except Exception as e:
-            self.log_error(f"[bold red]❌ 初始化失敗: {e}[/]")
+            self.log_error(f"[bold red]❌ 初始化失敗: {e}[/]", e)
         finally:
             await broker.close()
 
@@ -643,7 +649,7 @@ class CryptoApp(App):
             self._refresh_sell_asset_options()
             self.log_msg(f">>> 交易對更新完成，共 {len(symbols)} 筆")
         except Exception as exc:
-            self.log_error(f"[bold red]❌ 取得交易對失敗: {exc}[/]")
+            self.log_error(f"[bold red]❌ 取得交易對失敗: {exc}[/]", exc)
         finally:
             try:
                 await self._sync_time_offset()
@@ -742,7 +748,7 @@ class CryptoApp(App):
                         continue
                     except Exception:
                         pass
-                self.log_error(f"❌ 無法取得 {asset} 餘額")
+                self.log_error(f"❌ 無法取得 {asset} 餘額", exc)
         try:
             wallet_data = await broker.get_wallet_overview()
             self.wallet_overview = [
@@ -1026,7 +1032,7 @@ class CryptoApp(App):
                 price = float(klines[-1][4])
                 self.query_one("#sell_price", Static).update(f"現價: {price:.8f}")
         except Exception as exc:
-            self.log_error(f"[賣出] 取得現價失敗: {exc}")
+            self.log_error(f"[賣出] 取得現價失敗: {exc}", exc)
         finally:
             self.price_polling = False
 
@@ -1668,8 +1674,8 @@ class CryptoApp(App):
         try:
             client = create_spot_client(is_testnet=conf.IS_TESTNET)
             await asyncio.to_thread(client.rest_api.time)
-        except Exception:
-            self.log_error("[bold red]❌ 時間同步失敗[/]")
+        except Exception as exc:
+            self.log_error("[bold red]❌ 時間同步失敗[/]", exc)
 
     async def _maybe_sync_time(self):
         now = datetime.now().timestamp()
