@@ -359,6 +359,13 @@ class CryptoApp(App):
             self.log_train(
                 f">>> [模擬] 已檢測資料 {total_count} 筆 / 已訓練 {self.trained_rows} 筆 / 差異 {delta} 筆"
             )
+            if delta > 0 and total_count >= conf.SEQ_LENGTH:
+                if self.background_training_task and not self.background_training_task.done():
+                    self.pending_training = True
+                    self.log_train("[bold yellow]⚠️ 背景訓練仍在執行，已排隊下一輪訓練[/]")
+                else:
+                    self.log_train(f">>> [模擬] 觸發訓練 (差異 {delta} 筆)...")
+                    self.background_training_task = asyncio.create_task(self._run_training_cycle())
             self.simulation_future = asyncio.to_thread(
                 self._simulate_collect_sync,
                 symbol,
