@@ -362,7 +362,7 @@ def append_trade_event(path: str, row: Iterable) -> None:
     _append_row(path, row)
 
 
-def write_klines(path: str, klines: Iterable[Iterable], overwrite: bool = True) -> int:
+def write_klines(path: str, klines: Iterable[Iterable], overwrite: bool = True, on_progress=None) -> int:
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     count = 0
     if overwrite:
@@ -396,7 +396,9 @@ def write_klines(path: str, klines: Iterable[Iterable], overwrite: bool = True) 
         with open(path, "w", newline="", encoding="utf-8") as handle:
             writer = csv.writer(handle)
             writer.writerow(list(KLINE_HEADERS))
-            for row in merged:
+            for idx, row in enumerate(merged, start=1):
                 writer.writerow(row)
+                if on_progress and idx % 100000 == 0:
+                    on_progress(idx, len(merged))
         count = len(merged)
     return count

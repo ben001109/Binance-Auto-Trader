@@ -331,7 +331,21 @@ class CryptoApp(App):
                 "now",
                 on_progress=on_progress,
             )
-            count = write_klines("data/history.csv", klines, overwrite=False)
+            self.log_train(">>> [歷史] 開始合併與寫入...")
+
+            def on_merge_progress(done, total):
+                if total <= 0:
+                    return
+                percent = min(done / total, 1.0)
+                bar = self._progress_bar(percent)
+                self.log_train(f">>> [歷史] 合併中 {bar} {done}/{total}")
+
+            count = write_klines(
+                "data/history.csv",
+                klines,
+                overwrite=False,
+                on_progress=on_merge_progress,
+            )
             self.log_train(f"[bold green]✅ 歷史資料下載完成（已合併）{count} 筆[/]")
         except Exception as exc:
             self.log_train_error(f"[bold red]❌ 歷史資料下載失敗: {exc}[/]")
