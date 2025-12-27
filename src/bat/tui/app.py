@@ -352,6 +352,11 @@ class CryptoApp(App):
             return
         try:
             set_stop_training(False)
+            total_count = self._history_count("data/history.csv")
+            delta = max(total_count - self.trained_rows, 0)
+            self.log_train(
+                f">>> [模擬] 已檢測資料 {total_count} 筆 / 已訓練 {self.trained_rows} 筆 / 差異 {delta} 筆"
+            )
             self.simulation_future = asyncio.to_thread(
                 self._simulate_collect_sync,
                 symbol,
@@ -365,6 +370,9 @@ class CryptoApp(App):
                 "simulate",
             )
             count = await self.simulation_future
+            total_count = self._history_count("data/history.csv")
+            delta = max(total_count - self.trained_rows, 0)
+            self.log_train(f">>> [模擬] 完成後差異 {delta} 筆")
             self.log_train(f"[bold green]✅ 模擬完成！共 {count} 筆[/]")
         except Exception as e:
             self.log_train_error(f"[bold red]❌ 模擬失敗: {e}[/]", e)
