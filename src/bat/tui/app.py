@@ -14,9 +14,9 @@ from textual.widgets import Button, Header, Footer, Static, RichLog, Label, Inpu
 from bat.config import conf
 from bat.data.dataset import DataProcessor
 from bat.execution.broker import BinanceBroker
-from bat.execution.spot_client import async_exchange_info_all, create_spot_client
+from bat.execution.spot_client import async_exchange_info, async_exchange_info_all, async_historical_klines, create_spot_client
 from bat.auto_trader import decide_trade, compute_order_size, apply_confidence_threshold
-from bat.simulation import simulate_and_collect, append_kline, append_trade_event
+from bat.simulation import simulate_and_collect, append_kline, append_trade_event, write_klines
 from bat.logger import get_logger, install_crash_handler
 from bat.training import train_and_backtest, set_stop_training
 from bat.training import should_stop_training
@@ -137,6 +137,7 @@ class CryptoApp(App):
                         yield Input(value="1", placeholder="Online 最少成交筆", id="input_online_min_trades")
                 yield Label("訓練動作", classes="chart_title")
                 with Container(id="train_actions"):
+                    yield Button("⬇️ 下載歷史資料", id="btn_download_history", variant="primary")
                     yield Button("🧪 開始模擬蒐集", id="btn_simulate", variant="primary")
                     yield Button("🧠 訓練模型", id="btn_train", variant="warning")
                     yield Button("🧹 重置訓練進度", id="btn_reset_train", variant="default")
@@ -243,6 +244,9 @@ class CryptoApp(App):
         if btn_id == "btn_sell_asset":
             self.run_worker(self.action_sell_asset(), exclusive=True)
             return
+        if btn_id == "btn_download_history":
+            self.run_worker(self.action_download_history(), exclusive=True)
+            return
         if btn_id == "btn_reset_train":
             self._reset_training_progress()
             return
@@ -292,6 +296,21 @@ class CryptoApp(App):
         finally:
             set_stop_training(False)
             await self._sync_time_offset()
+
+    async def action_download_history(self) -> None:
+        symbol, interval, _poll_interval, _sim_steps, is_testnet = self._read_inputs()
+        try:
+            if is_testnet:
+                self.log_train("[歷史] Testnet 模式，改用主網公開資料下載")
+            client = create_spot_client(is_testnet=False)
+            info = await async_exchange_info(client, symbol)
+            start_str = self._onboard_date_str(info)
+            self.log_train(f">>> [歷史] 下載 {symbol} {interval} 從 {start_str} 開始...")
+            klines = await async_historical_klines(client, symbol, interval, start_str, "now")
+            count = write_klines("data/history.csv", klines, overwrite=True)
+            self.log_train(f"[bold green]✅ 歷史資料下載完成 {count} 筆[/]")
+        except Exception as exc:
+            self.log_train_error(f"[bold red]❌ 歷史資料下載失敗: {exc}[/]")
 
     async def action_train_model(self):
         if self.train_loop_active:
@@ -1178,6 +1197,24 @@ class CryptoApp(App):
                 return max(sum(1 for _ in handle) - 1, 0)
         except Exception:
             return 0
+
+    def _onboard_date_str(self, info: dict) -> str:
+        onboard_ms = None
+        if isinstance(info, dict):
+            symbol_info = None
+            if info.get("symbols"):
+                symbol_info = info["symbols"][0]
+            else:
+                symbol_info = info
+            if isinstance(symbol_info, dict):
+                onboard_ms = symbol_info.get("onboardDate")
+        if onboard_ms:
+            try:
+                dt = datetime.utcfromtimestamp(int(onboard_ms) / 1000)
+                return dt.strftime("%Y-%m-%d %H:%M:%S")
+            except Exception:
+                pass
+        return "2017-07-01 00:00:00"
 
     def _get_sim_steps_value(self) -> int:
         value = self.query_one("#input_sim_steps", Input).value.strip()

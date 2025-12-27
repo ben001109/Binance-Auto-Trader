@@ -360,3 +360,21 @@ def append_kline(path: str, kline: Iterable) -> None:
 def append_trade_event(path: str, row: Iterable) -> None:
     _ensure_csv(path, TRADE_HEADERS)
     _append_row(path, row)
+
+
+def write_klines(path: str, klines: Iterable[Iterable], overwrite: bool = True) -> int:
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    count = 0
+    if overwrite:
+        with open(path, "w", newline="", encoding="utf-8") as handle:
+            writer = csv.writer(handle)
+            writer.writerow(list(KLINE_HEADERS))
+            for row in klines:
+                writer.writerow(list(row))
+                count += 1
+    else:
+        _ensure_csv(path, KLINE_HEADERS)
+        for row in klines:
+            _append_row(path, row)
+            count += 1
+    return count
