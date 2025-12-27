@@ -57,6 +57,8 @@ class CryptoApp(App):
     price_polling = False
     usdt_symbols = set()
     pretrain_done = False
+    trained_rows = 0
+    train_progress_path = "data/train_progress.json"
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -180,6 +182,7 @@ class CryptoApp(App):
         self.train_loop_active = False
         self.last_time_sync = 0.0
         self.pretrain_done = False
+        self.trained_rows = self._load_trained_rows()
         self.log_msg("歡迎使用 Binance Auto Trader (BAT) v1.0")
         self.log_msg(f"目前交易對: [bold cyan]{conf.SYMBOL}[/]")
         self.log_msg(f"API 模式: {'[green]Testnet[/]' if conf.IS_TESTNET else '[bold red]REAL[/]'}")
@@ -421,12 +424,16 @@ class CryptoApp(App):
             set_stop_training(False)
             self.train_loop_active = True
             await self.action_download_history()
+            total_count = self._history_count("data/history.csv")
+            delta = max(total_count - self.trained_rows, 0)
+            self.log_train(f">>> [訓練] 已檢測資料 {total_count} 筆 / 已訓練 {self.trained_rows} 筆 / 差異 {delta} 筆")
             if not self.pretrain_done:
-                total_count = self._history_count("data/history.csv")
-                if total_count >= conf.SEQ_LENGTH:
+                if total_count >= conf.SEQ_LENGTH and delta > 0:
                     self.log_train(f">>> [訓練] 先使用既有資料訓練 ({total_count} 筆)...")
                     await self._run_training_cycle()
                     self.pretrain_done = True
+                    self.trained_rows = total_count
+                    self._save_trained_rows(self.trained_rows)
                     if should_stop_training():
                         return
             while self.train_loop_active:
@@ -457,6 +464,8 @@ class CryptoApp(App):
                 total_count = self._history_count("data/history.csv")
                 new_rows = max(total_count - before_count, 0)
                 self.log_train(f">>> [訓練] 本輪新增資料 {new_rows} 筆")
+                delta = max(total_count - self.trained_rows, 0)
+                self.log_train(f">>> [訓練] 累積差異 {delta} 筆")
                 if total_count < conf.SEQ_LENGTH:
                     self.log_train_error(
                         f"[bold red]❌ 模擬資料不足({total_count}<{conf.SEQ_LENGTH})，繼續收集[/]"
@@ -464,6 +473,9 @@ class CryptoApp(App):
                     continue
                 if self.background_training_task and not self.background_training_task.done():
                     self.log_train("[bold yellow]⚠️ 背景訓練仍在執行，先繼續收集[/]")
+                    continue
+                if delta <= 0:
+                    self.log_train("[bold yellow]⚠️ 無新增資料，跳過本輪訓練[/]")
                     continue
                 self.log_train(f">>> [訓練] 啟動背景訓練 (累積 {total_count} 筆)...")
                 self.background_training_task = asyncio.create_task(self._run_training_cycle())
@@ -509,6 +521,9 @@ class CryptoApp(App):
                 f"MaxDD {risk.max_dd_stop:.2%} / "
                 f"Splits {risk.position_splits}"
             )
+            total_count = self._history_count("data/history.csv")
+            self.trained_rows = total_count
+            self._save_trained_rows(self.trained_rows)
         except Exception as e:
             self.log_train_error(f"[bold red]❌ 背景訓練失敗: {e}[/]", e)
         finally:
@@ -1298,6 +1313,20 @@ class CryptoApp(App):
                 return max(sum(1 for _ in handle) - 1, 0)
         except Exception:
             return 0
+
+    def _load_trained_rows(self) -> int:
+        try:
+            with open(self.train_progress_path, "r", encoding="utf-8") as handle:
+                data = json.load(handle)
+            return int(data.get("trained_rows", 0))
+        except Exception:
+            return 0
+
+    def _save_trained_rows(self, rows: int) -> None:
+        os.makedirs(os.path.dirname(self.train_progress_path) or ".", exist_ok=True)
+        payload = {"trained_rows": int(rows), "updated_at": datetime.now().isoformat()}
+        with open(self.train_progress_path, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, ensure_ascii=True, indent=2)
 
     def _parse_date_ms(self, value: str) -> int:
         if not value:
