@@ -60,6 +60,7 @@ layout: vertical;
 #tab_train {
     height: 1fr;
     layout: vertical;
+    overflow-y: auto;
 }
 
 #tab_charts,
