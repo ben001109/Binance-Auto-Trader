@@ -56,6 +56,7 @@ class CryptoApp(App):
     price_broker = None
     price_polling = False
     usdt_symbols = set()
+    pretrain_done = False
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -177,6 +178,7 @@ class CryptoApp(App):
         self.saved_symbol = None
         self.train_loop_active = False
         self.last_time_sync = 0.0
+        self.pretrain_done = False
         self.log_msg("歡迎使用 Binance Auto Trader (BAT) v1.0")
         self.log_msg(f"目前交易對: [bold cyan]{conf.SYMBOL}[/]")
         self.log_msg(f"API 模式: {'[green]Testnet[/]' if conf.IS_TESTNET else '[bold red]REAL[/]'}")
@@ -300,6 +302,14 @@ class CryptoApp(App):
         try:
             set_stop_training(False)
             self.train_loop_active = True
+            if not self.pretrain_done:
+                total_count = self._history_count("data/history.csv")
+                if total_count >= conf.SEQ_LENGTH:
+                    self.log_train(f">>> [訓練] 先使用既有資料訓練 ({total_count} 筆)...")
+                    await self._run_training_cycle()
+                    self.pretrain_done = True
+                    if should_stop_training():
+                        return
             while self.train_loop_active:
                 symbol, interval, poll_interval, sim_steps, _ = self._read_inputs()
                 await self._maybe_sync_time()
@@ -1025,6 +1035,7 @@ class CryptoApp(App):
             self.log_msg("[訓練] 已清除 checkpoint，下一次訓練將重新開始")
         else:
             self.log_msg("[訓練] 無可清除的 checkpoint")
+        self.pretrain_done = False
 
     async def action_sell_asset(self) -> None:
         asset = self.query_one("#select_sell_asset", Select).value
