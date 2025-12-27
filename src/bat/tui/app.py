@@ -223,6 +223,54 @@ class CryptoApp(App):
             else:
                 self.logger.error(message)
 
+    def _log_train_threadsafe(self, message: str) -> None:
+        try:
+            self.call_from_thread(self.log_train, message)
+        except Exception:
+            self.log_train(message)
+
+    def _log_train_error_threadsafe(self, message: str, exc: Exception | None = None) -> None:
+        try:
+            self.call_from_thread(self.log_train_error, message, exc)
+        except Exception:
+            self.log_train_error(message, exc)
+
+    def _update_train_status_threadsafe(self, payload: dict) -> None:
+        try:
+            self.call_from_thread(self._update_train_status, payload)
+        except Exception:
+            self._update_train_status(payload)
+
+    def _simulate_collect_sync(
+        self,
+        symbol: str,
+        interval: str,
+        steps: int,
+        output_path: str,
+        trade_log_path: str,
+        poll_interval: str,
+        confidence_threshold: float,
+        progress_path: str,
+        progress_key: str,
+    ) -> int:
+        async def runner() -> int:
+            return await simulate_and_collect(
+                symbol=symbol,
+                interval=interval,
+                steps=steps,
+                output_path=output_path,
+                trade_log_path=trade_log_path,
+                is_testnet=True,
+                on_status=self._update_train_status_threadsafe,
+                on_log=self._log_train_threadsafe,
+                poll_interval=poll_interval,
+                confidence_threshold=confidence_threshold,
+                progress_path=progress_path,
+                progress_key=progress_key,
+            )
+
+        return asyncio.run(runner())
+
     async def on_button_pressed(self, event: Button.Pressed) -> None:
         btn_id = event.button.id
 
@@ -282,19 +330,17 @@ class CryptoApp(App):
             return
         try:
             set_stop_training(False)
-            count = await simulate_and_collect(
-                symbol=symbol,
-                interval=interval,
-                steps=sim_steps,
-                output_path="data/history.csv",
-                trade_log_path="data/testnet_trades.csv",
-                is_testnet=True,
-                on_status=self._update_train_status,
-                on_log=self.log_train,
-                poll_interval=poll_interval,
-                confidence_threshold=self._confidence_threshold(),
-                progress_path="data/sim_progress.json",
-                progress_key="simulate",
+            count = await asyncio.to_thread(
+                self._simulate_collect_sync,
+                symbol,
+                interval,
+                sim_steps,
+                "data/history.csv",
+                "data/testnet_trades.csv",
+                poll_interval,
+                self._confidence_threshold(),
+                "data/sim_progress.json",
+                "simulate",
             )
             self.log_train(f"[bold green]✅ 模擬完成！共 {count} 筆[/]")
         except Exception as e:
@@ -392,19 +438,17 @@ class CryptoApp(App):
                     self.log_train(f"[bold yellow]⚠️ 模擬步數已提升為 {sim_steps}[/]")
                 self._save_settings()
                 self.log_train(f">>> [訓練] 新一輪收集開始 (目標 {sim_steps} 筆)...")
-                count = await simulate_and_collect(
-                    symbol=symbol,
-                    interval=interval,
-                    steps=sim_steps,
-                    output_path="data/history.csv",
-                    trade_log_path="data/testnet_trades.csv",
-                    is_testnet=True,
-                    on_status=self._update_train_status,
-                    on_log=self.log_train,
-                    poll_interval=poll_interval,
-                    confidence_threshold=self._confidence_threshold(),
-                    progress_path="data/sim_progress.json",
-                    progress_key="train_collect",
+                count = await asyncio.to_thread(
+                    self._simulate_collect_sync,
+                    symbol,
+                    interval,
+                    sim_steps,
+                    "data/history.csv",
+                    "data/testnet_trades.csv",
+                    poll_interval,
+                    self._confidence_threshold(),
+                    "data/sim_progress.json",
+                    "train_collect",
                 )
                 if should_stop_training():
                     break
