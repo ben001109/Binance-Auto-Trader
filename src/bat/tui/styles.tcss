@@ -63,6 +63,15 @@ layout: vertical;
     overflow-y: auto;
 }
 
+#tab_train > .container {
+    overflow-y: auto;
+    height: auto;
+}
+
+#train_controls {
+    min-height: 1;
+}
+
 #tab_charts,
 #tab_market {
     height: 1fr;
