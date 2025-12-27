@@ -6,6 +6,7 @@ from bat.execution.spot_client import (
     async_exchange_info,
     async_klines,
     async_new_order,
+    async_sync_time_offset,
     async_wallet_balances,
     create_spot_client,
     create_wallet_client,
@@ -40,14 +41,22 @@ class BinanceBroker:
                     self.logger.info("Balance fetched for %s", asset)
                     return float(item.free or 0.0)
             return 0.0
-        except RuntimeError as exc:
+        except Exception as exc:
             if "after shutdown" in str(exc):
                 self.logger.warning("Balance fetch skipped during shutdown (%s)", asset)
                 return 0.0
-            self.logger.exception("Balance fetch failed for %s", asset)
-            await self.close()
-            raise
-        except Exception:
+            if "recvWindow" in str(exc) or "Timestamp" in str(exc):
+                self.logger.warning("Balance fetch retry after time sync for %s", asset)
+                await async_sync_time_offset(self.client)
+                try:
+                    account = await async_account(self.client)
+                    for item in account.balances or []:
+                        if item.asset == asset:
+                            self.logger.info("Balance fetched for %s", asset)
+                            return float(item.free or 0.0)
+                    return 0.0
+                except Exception:
+                    pass
             self.logger.exception("Balance fetch failed for %s", asset)
             await self.close()
             raise

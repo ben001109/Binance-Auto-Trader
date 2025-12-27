@@ -181,3 +181,7 @@ def _sync_time_offset(client: Spot):
         return int(time.time() * 1000) + _TIME_OFFSET_MS
 
     binance_utils.get_timestamp = _patched_timestamp
+
+
+async def async_sync_time_offset(client: Spot) -> None:
+    await asyncio.to_thread(_sync_time_offset, client)
