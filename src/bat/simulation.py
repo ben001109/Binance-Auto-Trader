@@ -373,8 +373,30 @@ def write_klines(path: str, klines: Iterable[Iterable], overwrite: bool = True) 
                 writer.writerow(list(row))
                 count += 1
     else:
-        _ensure_csv(path, KLINE_HEADERS)
+        existing = {}
+        if os.path.exists(path) and os.path.getsize(path) > 0:
+            try:
+                with open(path, "r", encoding="utf-8") as handle:
+                    reader = csv.reader(handle)
+                    headers = next(reader, [])
+                    if headers != list(KLINE_HEADERS):
+                        _ensure_csv(path, KLINE_HEADERS)
+                    else:
+                        for row in reader:
+                            if not row:
+                                continue
+                            existing[row[0]] = row
+            except Exception:
+                existing = {}
         for row in klines:
-            _append_row(path, row)
-            count += 1
+            if not row:
+                continue
+            existing[str(row[0])] = list(row)
+        merged = sorted(existing.values(), key=lambda item: int(item[0]))
+        with open(path, "w", newline="", encoding="utf-8") as handle:
+            writer = csv.writer(handle)
+            writer.writerow(list(KLINE_HEADERS))
+            for row in merged:
+                writer.writerow(row)
+        count = len(merged)
     return count

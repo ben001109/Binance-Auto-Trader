@@ -307,8 +307,8 @@ class CryptoApp(App):
             start_str = self._onboard_date_str(info)
             self.log_train(f">>> [歷史] 下載 {symbol} {interval} 從 {start_str} 開始...")
             klines = await async_historical_klines(client, symbol, interval, start_str, "now")
-            count = write_klines("data/history.csv", klines, overwrite=True)
-            self.log_train(f"[bold green]✅ 歷史資料下載完成 {count} 筆[/]")
+            count = write_klines("data/history.csv", klines, overwrite=False)
+            self.log_train(f"[bold green]✅ 歷史資料下載完成（已合併）{count} 筆[/]")
         except Exception as exc:
             self.log_train_error(f"[bold red]❌ 歷史資料下載失敗: {exc}[/]")
 
