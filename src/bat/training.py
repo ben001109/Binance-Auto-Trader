@@ -201,11 +201,21 @@ def suggest_risk_params_from_model(
     )
 
 
-def train_model(data_path="data/history.csv", epochs=None, df=None, on_epoch_loss=None, on_status=None, status_every=20):
+def train_model(
+    data_path="data/history.csv",
+    epochs=None,
+    df=None,
+    on_epoch_loss=None,
+    on_status=None,
+    on_log=None,
+    status_every=20,
+):
     epochs = epochs or conf.EPOCHS
     print(f"使用裝置: {conf.DEVICE}")
     logger = get_logger("bat.training")
     logger.info("Training start: data_path=%s epochs=%s", data_path, epochs)
+    if on_log:
+        on_log(f">>> [訓練] 開始 (epochs={epochs})")
     device = conf.DEVICE
     use_amp = device.type == "cuda"
     if use_amp:
@@ -573,6 +583,8 @@ def train_model(data_path="data/history.csv", epochs=None, df=None, on_epoch_los
             print(f"Epoch {epoch+1}/{epochs}, Loss: {avg_loss:.6f}")
             logger.debug("Epoch %s avg loss=%.8f", epoch + 1, avg_loss)
         logger.info("Epoch %s/%s avg loss=%.8f", epoch + 1, epochs, avg_loss)
+        if on_log:
+            on_log(f">>> [訓練] Epoch {epoch + 1}/{epochs} loss={avg_loss:.6f}")
         if on_epoch_loss:
             on_epoch_loss(avg_loss)
         try:
@@ -593,10 +605,19 @@ def train_model(data_path="data/history.csv", epochs=None, df=None, on_epoch_los
     torch.save(model.state_dict(), model_path)
     print(f">>> 模型已保存至 {model_path}")
     logger.info("Model saved: %s", model_path)
+    if on_log:
+        on_log(f">>> [訓練] 模型已保存 {model_path}")
     return model, processor, df
 
 
-def train_and_backtest(data_path="data/history.csv", epochs=None, on_epoch_loss=None, on_status=None, status_every=20):
+def train_and_backtest(
+    data_path="data/history.csv",
+    epochs=None,
+    on_epoch_loss=None,
+    on_status=None,
+    on_log=None,
+    status_every=20,
+):
     df = _load_training_data(data_path)
     model, processor, df = train_model(
         data_path=data_path,
@@ -604,6 +625,7 @@ def train_and_backtest(data_path="data/history.csv", epochs=None, on_epoch_loss=
         df=df,
         on_epoch_loss=on_epoch_loss,
         on_status=on_status,
+        on_log=on_log,
         status_every=status_every,
     )
 

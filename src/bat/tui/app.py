@@ -553,10 +553,14 @@ class CryptoApp(App):
             def on_status(payload):
                 loop.call_soon_threadsafe(self._update_train_status, payload)
 
+            def on_log(message: str):
+                loop.call_soon_threadsafe(self.log_train, message)
+
             result, risk = await asyncio.to_thread(
                 train_and_backtest,
                 on_epoch_loss=on_epoch_loss,
                 on_status=on_status,
+                on_log=on_log,
                 status_every=self._get_status_every_value(),
             )
             if result.equity_curve:
@@ -1767,11 +1771,15 @@ class CryptoApp(App):
         def on_status(payload):
             loop.call_soon_threadsafe(self._update_train_status, payload)
 
+        def on_log(message: str):
+            loop.call_soon_threadsafe(self.log_train, message)
+
         try:
             result, _risk = await asyncio.to_thread(
                 train_and_backtest,
                 on_epoch_loss=on_epoch_loss,
                 on_status=on_status,
+                on_log=on_log,
                 status_every=self._get_status_every_value(),
             )
             if result.equity_curve:
