@@ -306,7 +306,21 @@ class CryptoApp(App):
             info = await async_exchange_info(client, symbol)
             start_str = self._onboard_date_str(info)
             self.log_train(f">>> [歷史] 下載 {symbol} {interval} 從 {start_str} 開始...")
-            klines = await async_historical_klines(client, symbol, interval, start_str, "now")
+            last_report = {"count": 0}
+
+            def on_progress(total):
+                if total - last_report["count"] >= 1000:
+                    last_report["count"] = total
+                    self.log_train(f">>> [歷史] 已下載 {total} 筆...")
+
+            klines = await async_historical_klines(
+                client,
+                symbol,
+                interval,
+                start_str,
+                "now",
+                on_progress=on_progress,
+            )
             count = write_klines("data/history.csv", klines, overwrite=False)
             self.log_train(f"[bold green]✅ 歷史資料下載完成（已合併）{count} 筆[/]")
         except Exception as exc:

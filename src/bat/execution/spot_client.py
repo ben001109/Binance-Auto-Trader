@@ -116,6 +116,7 @@ async def async_historical_klines(
     interval: str,
     start_str: str,
     end_str: str = "now",
+    on_progress=None,
 ):
     start_ms = _parse_date(start_str)
     end_ms = _parse_date(end_str)
@@ -141,6 +142,8 @@ async def async_historical_klines(
         all_klines.extend(normalized)
         last_open_time = normalized[-1][0]
         current = last_open_time + step_ms
+        if on_progress:
+            on_progress(len(all_klines))
 
         if len(klines) < KLINES_LIMIT:
             break
