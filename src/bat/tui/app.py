@@ -540,6 +540,7 @@ class CryptoApp(App):
     async def _run_training_cycle(self):
         try:
             self.training_active = True
+            self.log_train(">>> [訓練] 開始訓練 (背景執行)")
             mem_fraction = self._get_mem_fraction_value()
             os.environ["BAT_GPU_MEM_FRACTION"] = f"{mem_fraction:.2f}"
             os.environ["BAT_BATCH_SIZE"] = str(self._get_batch_size_value())
