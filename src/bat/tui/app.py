@@ -373,6 +373,12 @@ class CryptoApp(App):
             total_count = self._history_count("data/history.csv")
             delta = max(total_count - self.trained_rows, 0)
             self.log_train(f">>> [模擬] 完成後差異 {delta} 筆")
+            if delta > 0 and total_count >= conf.SEQ_LENGTH:
+                if self.background_training_task and not self.background_training_task.done():
+                    self.log_train("[bold yellow]⚠️ 背景訓練仍在執行，跳過本次自動訓練[/]")
+                else:
+                    self.log_train(f">>> [模擬] 觸發訓練 (差異 {delta} 筆)...")
+                    self.background_training_task = asyncio.create_task(self._run_training_cycle())
             self.log_train(f"[bold green]✅ 模擬完成！共 {count} 筆[/]")
         except Exception as e:
             self.log_train_error(f"[bold red]❌ 模擬失敗: {e}[/]", e)
