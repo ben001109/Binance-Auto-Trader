@@ -312,8 +312,11 @@ class CryptoApp(App):
             self.log_train(f">>> [歷史] 下載 {symbol} {interval} 從 {start_str} 開始...")
             last_report = {"percent": 0.0, "rows": 0}
 
-            def on_progress(total):
-                percent = min(total / expected, 1.0)
+            def on_progress(total, current_ms=None, end_ms_value=None):
+                if current_ms is not None and end_ms_value:
+                    percent = min((current_ms - start_ms) / max(end_ms_value - start_ms, 1), 1.0)
+                else:
+                    percent = min(total / expected, 1.0)
                 if percent - last_report["percent"] >= 0.01 or total - int(last_report.get("rows", 0)) >= 1000:
                     last_report["percent"] = percent
                     last_report["rows"] = total

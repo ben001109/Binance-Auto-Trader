@@ -143,7 +143,7 @@ async def async_historical_klines(
         last_open_time = normalized[-1][0]
         current = last_open_time + step_ms
         if on_progress:
-            on_progress(len(all_klines))
+            on_progress(len(all_klines), last_open_time, end_ms)
 
         if len(klines) < KLINES_LIMIT:
             break
