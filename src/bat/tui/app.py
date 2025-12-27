@@ -61,6 +61,7 @@ class CryptoApp(App):
     train_progress_path = "data/train_progress.json"
     simulation_future = None
     train_collect_future = None
+    pending_training = False
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -187,6 +188,7 @@ class CryptoApp(App):
         self.trained_rows = self._load_trained_rows()
         self.simulation_future = None
         self.train_collect_future = None
+        self.pending_training = False
         self.log_msg("歡迎使用 Binance Auto Trader (BAT) v1.0")
         self.log_msg(f"目前交易對: [bold cyan]{conf.SYMBOL}[/]")
         self.log_msg(f"API 模式: {'[green]Testnet[/]' if conf.IS_TESTNET else '[bold red]REAL[/]'}")
@@ -375,7 +377,8 @@ class CryptoApp(App):
             self.log_train(f">>> [模擬] 完成後差異 {delta} 筆")
             if delta > 0 and total_count >= conf.SEQ_LENGTH:
                 if self.background_training_task and not self.background_training_task.done():
-                    self.log_train("[bold yellow]⚠️ 背景訓練仍在執行，跳過本次自動訓練[/]")
+                    self.pending_training = True
+                    self.log_train("[bold yellow]⚠️ 背景訓練仍在執行，已排隊下一輪訓練[/]")
                 else:
                     self.log_train(f">>> [模擬] 觸發訓練 (差異 {delta} 筆)...")
                     self.background_training_task = asyncio.create_task(self._run_training_cycle())
@@ -508,7 +511,11 @@ class CryptoApp(App):
                     )
                     continue
                 if self.background_training_task and not self.background_training_task.done():
-                    self.log_train("[bold yellow]⚠️ 背景訓練仍在執行，先繼續收集[/]")
+                    if delta > 0:
+                        self.pending_training = True
+                        self.log_train("[bold yellow]⚠️ 背景訓練仍在執行，已排隊下一輪訓練[/]")
+                    else:
+                        self.log_train("[bold yellow]⚠️ 背景訓練仍在執行，先繼續收集[/]")
                     continue
                 if delta <= 0:
                     self.log_train("[bold yellow]⚠️ 無新增資料，跳過本輪訓練[/]")
@@ -566,6 +573,13 @@ class CryptoApp(App):
         finally:
             self.training_active = False
             set_stop_training(False)
+            if self.pending_training and not should_stop_training():
+                total_count = self._history_count("data/history.csv")
+                delta = max(total_count - self.trained_rows, 0)
+                if delta > 0:
+                    self.pending_training = False
+                    self.log_train(f">>> [訓練] 觸發排隊訓練 (差異 {delta} 筆)...")
+                    self.background_training_task = asyncio.create_task(self._run_training_cycle())
 
     async def action_run_bot(self):
         self.log_msg(">>> [交易] 正在連接 Binance API...")
