@@ -438,6 +438,7 @@ class CryptoApp(App):
                     self.log_train(f"[bold yellow]⚠️ 模擬步數已提升為 {sim_steps}[/]")
                 self._save_settings()
                 self.log_train(f">>> [訓練] 新一輪收集開始 (目標 {sim_steps} 筆)...")
+                before_count = self._history_count("data/history.csv")
                 count = await asyncio.to_thread(
                     self._simulate_collect_sync,
                     symbol,
@@ -454,6 +455,8 @@ class CryptoApp(App):
                     break
                 await self._maybe_sync_time()
                 total_count = self._history_count("data/history.csv")
+                new_rows = max(total_count - before_count, 0)
+                self.log_train(f">>> [訓練] 本輪新增資料 {new_rows} 筆")
                 if total_count < conf.SEQ_LENGTH:
                     self.log_train_error(
                         f"[bold red]❌ 模擬資料不足({total_count}<{conf.SEQ_LENGTH})，繼續收集[/]"
