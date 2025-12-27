@@ -1059,7 +1059,7 @@ class CryptoApp(App):
         self.current_tab = tab_name
         trade = self.query_one("#tab_trade", Container)
         wallet = self.query_one("#tab_wallet", Container)
-        train = self.query_one("#tab_train", Container)
+        train = self.query_one("#tab_train")
         charts = self.query_one("#tab_charts", Container)
         market = self.query_one("#tab_market", Container)
         trade.display = tab_name == "trade"
