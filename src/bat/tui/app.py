@@ -59,6 +59,8 @@ class CryptoApp(App):
     pretrain_done = False
     trained_rows = 0
     train_progress_path = "data/train_progress.json"
+    simulation_future = None
+    train_collect_future = None
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -183,6 +185,8 @@ class CryptoApp(App):
         self.last_time_sync = 0.0
         self.pretrain_done = False
         self.trained_rows = self._load_trained_rows()
+        self.simulation_future = None
+        self.train_collect_future = None
         self.log_msg("歡迎使用 Binance Auto Trader (BAT) v1.0")
         self.log_msg(f"目前交易對: [bold cyan]{conf.SYMBOL}[/]")
         self.log_msg(f"API 模式: {'[green]Testnet[/]' if conf.IS_TESTNET else '[bold red]REAL[/]'}")
@@ -326,6 +330,21 @@ class CryptoApp(App):
             if self.model_watch_task and not self.model_watch_task.done():
                 self.model_watch_task.cancel()
 
+    async def on_shutdown(self) -> None:
+        set_stop_training(True)
+        self.auto_trading = False
+        self.train_loop_active = False
+        if self.background_training_task and not self.background_training_task.done():
+            self.background_training_task.cancel()
+        if self.model_watch_task and not self.model_watch_task.done():
+            self.model_watch_task.cancel()
+        pending = [self.simulation_future, self.train_collect_future]
+        for future in [f for f in pending if f is not None and not f.done()]:
+            try:
+                await asyncio.wait_for(future, timeout=10)
+            except Exception:
+                pass
+
     async def action_simulate_data(self):
         symbol, interval, poll_interval, sim_steps, is_testnet = self._read_inputs()
         if not is_testnet:
@@ -333,7 +352,7 @@ class CryptoApp(App):
             return
         try:
             set_stop_training(False)
-            count = await asyncio.to_thread(
+            self.simulation_future = asyncio.to_thread(
                 self._simulate_collect_sync,
                 symbol,
                 interval,
@@ -345,10 +364,12 @@ class CryptoApp(App):
                 "data/sim_progress.json",
                 "simulate",
             )
+            count = await self.simulation_future
             self.log_train(f"[bold green]✅ 模擬完成！共 {count} 筆[/]")
         except Exception as e:
             self.log_train_error(f"[bold red]❌ 模擬失敗: {e}[/]", e)
         finally:
+            self.simulation_future = None
             set_stop_training(False)
             await self._sync_time_offset()
 
@@ -446,7 +467,7 @@ class CryptoApp(App):
                 self._save_settings()
                 self.log_train(f">>> [訓練] 新一輪收集開始 (目標 {sim_steps} 筆)...")
                 before_count = self._history_count("data/history.csv")
-                count = await asyncio.to_thread(
+                self.train_collect_future = asyncio.to_thread(
                     self._simulate_collect_sync,
                     symbol,
                     interval,
@@ -458,6 +479,7 @@ class CryptoApp(App):
                     "data/sim_progress.json",
                     "train_collect",
                 )
+                count = await self.train_collect_future
                 if should_stop_training():
                     break
                 await self._maybe_sync_time()
@@ -482,6 +504,7 @@ class CryptoApp(App):
         except Exception as e:
             self.log_train_error(f"[bold red]❌ 訓練失敗: {e}[/]", e)
         finally:
+            self.train_collect_future = None
             self.train_loop_active = False
             set_stop_training(False)
             await self._sync_time_offset()
