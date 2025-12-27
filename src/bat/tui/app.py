@@ -345,6 +345,7 @@ class CryptoApp(App):
         try:
             set_stop_training(False)
             self.train_loop_active = True
+            await self.action_download_history()
             if not self.pretrain_done:
                 total_count = self._history_count("data/history.csv")
                 if total_count >= conf.SEQ_LENGTH:
