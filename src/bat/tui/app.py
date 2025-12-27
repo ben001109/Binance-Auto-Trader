@@ -5,7 +5,7 @@ import pandas as pd
 import shutil
 import subprocess
 import torch
-from datetime import datetime
+from datetime import datetime, timezone
 
 from textual.app import App, ComposeResult
 from textual.containers import Container
@@ -305,13 +305,20 @@ class CryptoApp(App):
             client = create_spot_client(is_testnet=False)
             info = await async_exchange_info(client, symbol)
             start_str = self._onboard_date_str(info)
+            start_ms = self._parse_date_ms(start_str)
+            end_ms = int(datetime.now(tz=timezone.utc).timestamp() * 1000)
+            interval_ms = self._interval_ms_for_klines(interval)
+            expected = max(int((end_ms - start_ms) / interval_ms), 1)
             self.log_train(f">>> [歷史] 下載 {symbol} {interval} 從 {start_str} 開始...")
-            last_report = {"count": 0}
+            last_report = {"percent": 0.0, "rows": 0}
 
             def on_progress(total):
-                if total - last_report["count"] >= 1000:
-                    last_report["count"] = total
-                    self.log_train(f">>> [歷史] 已下載 {total} 筆...")
+                percent = min(total / expected, 1.0)
+                if percent - last_report["percent"] >= 0.01 or total - int(last_report.get("rows", 0)) >= 1000:
+                    last_report["percent"] = percent
+                    last_report["rows"] = total
+                    bar = self._progress_bar(percent)
+                    self.log_train(f">>> [歷史] {bar} 已下載 {total} 筆...")
 
             klines = await async_historical_klines(
                 client,
@@ -1211,6 +1218,36 @@ class CryptoApp(App):
                 return max(sum(1 for _ in handle) - 1, 0)
         except Exception:
             return 0
+
+    def _parse_date_ms(self, value: str) -> int:
+        if not value:
+            return int(datetime.now(tz=timezone.utc).timestamp() * 1000)
+        if value.lower() == "now":
+            return int(datetime.now(tz=timezone.utc).timestamp() * 1000)
+        dt = pd.to_datetime(value, utc=True)
+        return int(dt.timestamp() * 1000)
+
+    def _interval_ms_for_klines(self, interval: str) -> int:
+        interval = (interval or "").strip()
+        if not interval:
+            return 60 * 1000
+        if interval[-1].isdigit():
+            return max(int(interval) * 60 * 1000, 1000)
+        unit = interval[-1]
+        value = int(interval[:-1])
+        if unit == "s":
+            return max(value * 1000, 1000)
+        if unit == "m":
+            return max(value * 60 * 1000, 1000)
+        if unit == "h":
+            return max(value * 60 * 60 * 1000, 1000)
+        if unit == "d":
+            return max(value * 24 * 60 * 60 * 1000, 1000)
+        if unit == "w":
+            return max(value * 7 * 24 * 60 * 60 * 1000, 1000)
+        if unit == "M":
+            return max(value * 30 * 24 * 60 * 60 * 1000, 1000)
+        return 60 * 1000
 
     def _onboard_date_str(self, info: dict) -> str:
         onboard_ms = None
