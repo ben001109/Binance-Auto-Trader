@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 
 from textual.app import App, ComposeResult
 from textual.containers import Container
+from textual.widgets import ScrollView
 from textual.widgets import Button, Header, Footer, Static, RichLog, Label, Input, Select, Sparkline
 
 from bat.config import conf
@@ -119,7 +120,7 @@ class CryptoApp(App):
                 yield Static("現價: -", id="sell_price", markup=True)
                 yield Static("", id="wallet_info", markup=True)
 
-            with Container(id="tab_train"):
+            with ScrollView(id="tab_train"):
                 yield Label("訓練設定", classes="title")
                 with Container(id="train_controls"):
                     with Container(id="train_controls_left"):
