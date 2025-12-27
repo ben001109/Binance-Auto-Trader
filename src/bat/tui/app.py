@@ -332,19 +332,28 @@ class CryptoApp(App):
                 on_progress=on_progress,
             )
             self.log_train(">>> [歷史] 開始合併與寫入...")
+            loop = asyncio.get_running_loop()
+            last_merge = {"percent": 0.0}
 
             def on_merge_progress(done, total):
                 if total <= 0:
                     return
                 percent = min(done / total, 1.0)
+                if percent - last_merge["percent"] < 0.01 and done % 100000 != 0:
+                    return
+                last_merge["percent"] = percent
                 bar = self._progress_bar(percent)
-                self.log_train(f">>> [歷史] 合併中 {bar} {done}/{total}")
+                loop.call_soon_threadsafe(
+                    self.log_train,
+                    f">>> [歷史] 合併中 {bar} {done}/{total}",
+                )
 
-            count = write_klines(
+            count = await asyncio.to_thread(
+                write_klines,
                 "data/history.csv",
                 klines,
-                overwrite=False,
-                on_progress=on_merge_progress,
+                False,
+                on_merge_progress,
             )
             self.log_train(f"[bold green]✅ 歷史資料下載完成（已合併）{count} 筆[/]")
         except Exception as exc:
