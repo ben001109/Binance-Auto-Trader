@@ -40,6 +40,13 @@ class BinanceBroker:
                     self.logger.info("Balance fetched for %s", asset)
                     return float(item.free or 0.0)
             return 0.0
+        except RuntimeError as exc:
+            if "after shutdown" in str(exc):
+                self.logger.warning("Balance fetch skipped during shutdown (%s)", asset)
+                return 0.0
+            self.logger.exception("Balance fetch failed for %s", asset)
+            await self.close()
+            raise
         except Exception:
             self.logger.exception("Balance fetch failed for %s", asset)
             await self.close()
