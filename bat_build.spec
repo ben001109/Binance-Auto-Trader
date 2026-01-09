@@ -13,7 +13,6 @@ datas = [
 # Copy metadata for key packages
 datas += copy_metadata('textual')
 datas += copy_metadata('tqdm')
-datas += copy_metadata('regex')
 datas += copy_metadata('requests')
 datas += copy_metadata('packaging')
 datas += copy_metadata('filelock')
