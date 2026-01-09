@@ -12,6 +12,7 @@ class Config:
     # Trading Settings
     SYMBOL = 'BNBUSDT'
     INTERVAL = '15m'
+    RISK_PROFILE = os.getenv('BAT_RISK_PROFILE', 'STANDARD')  # CONSERVATIVE, STANDARD, AGGRESSIVE
 
     # Data Settings
     SEQ_LENGTH = 60    # 視窗長度
@@ -26,6 +27,8 @@ class Config:
         "RET_1",
         "VOL_20",
         "VOL_Z",
+        "RSI_1H",
+        "EMA_20_1H",
     ]
 
     # Model Settings
@@ -87,8 +90,23 @@ class Config:
         return os.getenv('BINANCE_API_KEY'), os.getenv('BINANCE_API_SECRET')
 
 
-    # Hardware
-    DEVICE = torch.device("cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu")
+    @property
+    def DEVICE(self):
+        if not hasattr(self, '_device'):
+            self._device = self._get_optimal_device()
+        return self._device
+
+    def _get_optimal_device(self):
+        if torch.cuda.is_available():
+            print("🚀 使用裝置: NVIDIA CUDA (GPU)")
+            return torch.device("cuda")
+        elif torch.backends.mps.is_available() and torch.backends.mps.is_built():
+            print("🍎 使用裝置: Apple Silicon (MPS/ANE)")
+            return torch.device("mps")
+        else:
+            print("🖥️ 使用裝置: CPU")
+            return torch.device("cpu")
+
     DEFAULT_ASSETS = ["USDT", "BTC", "BNB", "ETH"]
 
 conf = Config()

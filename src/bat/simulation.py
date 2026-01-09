@@ -8,7 +8,7 @@ from typing import Iterable
 from bat.config import conf
 from bat.execution.broker import BinanceBroker
 from bat.logger import get_logger
-from bat.auto_trader import decide_trade, compute_order_size, apply_confidence_threshold
+from bat.analyzer import AnalystAgent, compute_order_size, apply_confidence_threshold
 from bat.training import should_stop_training
 
 
@@ -151,6 +151,9 @@ async def simulate_and_collect(
 
     broker = BinanceBroker(is_testnet=True)
     await broker.init_client()
+    
+    # Initialize Analyst Agent
+    agent = AnalystAgent(client=broker.client, mode='lstm', symbol=symbol, interval=interval)
 
     last_close_time = None
     collected = 0
@@ -159,7 +162,11 @@ async def simulate_and_collect(
         if collected > 0 and on_log:
             on_log(f">>> [模擬] 續接進度: {collected}/{steps}")
     if on_status:
-        on_status({"collect_count": collected, "collect_total": steps})
+        on_status({
+            "collect_count": collected,
+            "collect_total": steps,
+            "progress": collected / max(steps, 1)
+        })
 
     try:
         while collected < steps:
@@ -186,7 +193,11 @@ async def simulate_and_collect(
             append_kline(output_path, latest)
             collected += 1
             if on_status:
-                on_status({"collect_count": collected, "collect_total": steps})
+                on_status({
+                    "collect_count": collected,
+                    "collect_total": steps,
+                    "progress": collected / max(steps, 1)
+                })
             if progress_path:
                 _save_progress(progress_path, progress_key, symbol, interval, steps, collected)
             if collected % max(log_every, 1) == 0:
@@ -194,7 +205,10 @@ async def simulate_and_collect(
                 if on_log:
                     on_log(f">>> [模擬] 蒐集中: {collected}/{steps}")
 
-            decision, risk = decide_trade(klines)
+                if on_log:
+                    on_log(f">>> [模擬] 蒐集中: {collected}/{steps}")
+
+            decision, risk = await agent.analyze(klines)
             if decision is None:
                 await _sleep_interval(interval, fallback=2)
                 continue

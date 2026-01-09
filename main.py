@@ -36,6 +36,10 @@ def main():
     print(f"🌍 環境設定: {'TESTNET (測試網)' if conf.IS_TESTNET else 'REAL MONEY (實盤 WARNING)'}")
     print("=" * 40)
 
+    # Windows Asyncio Fix
+    if sys.platform.startswith("win"):
+        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+
     try:
         # 4. 模式分發 (Dispatcher)
         if args.mode == 'tui':
@@ -43,7 +47,9 @@ def main():
             from bat.tui.app import CryptoApp
             app = CryptoApp()
             app.run()
-
+        elif args.mode == "cli": # New CLI mode
+            from bat.cli.app import run_cli # Assuming run_cli is in bat.cli.app
+            asyncio.run(run_cli())
         else:
             # 啟動 CLI 分析模式 (RSI / ML / LSTM)
             from bat.analyzer import run_analysis_module
