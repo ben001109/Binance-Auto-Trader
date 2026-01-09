@@ -81,19 +81,32 @@ graph TD
 - **信心值**：使用 `max(softmax)` 作為信心百分比。
 - **決策閾值**：若信心值低於使用者設定門檻，決策會被強制改為觀望（source=filtered）。
 
-## 🧪 實驗性功能與版本規範
+## 📏 Versioning Protocol (版本控制協議)
 
-- **實驗性功能規則**：所有實驗性功能只放在實驗分支，實驗完成後再決定是否合併主線。
-- **流程要求**：更新必須檢查後送 PR。
-- **版本標籤格式**：`v<major>.<minor>.<patch>-<channel>-<feature>`  
-  - `channel`：`dev` / `canary` / `ptb` / `exp`
-  - `feature`：該分支新增功能摘要（例：`train-tab`、`wallet-sell-ui`）
-- **目前版本分派**
-  - **主線 (stable)**：`v1.1.0`
-  - **dev**：`v1.1.1-dev-train-tab`
-  - **canary**：`v1.1.1-canary-train-tab`
-  - **ptb**：`v1.1.1-ptb-train-tab`
-  - **實驗 (RL 分支)**：`v1.1.1-exp-rl`
+為了確保 CI/CD 與 Release 的穩定性，所有 Agents 必須遵守以下規則：
+
+### 1. **Semantic Versioning (語意化版本)**
+格式：`v<MAJOR>.<MINOR>.<PATCH>` (e.g., `v1.0.0`)
+- **MAJOR**: 重大架構變更或不兼容更新 (Breaking Changes)
+- **MINOR**: 新功能向下相容 (New Features)
+- **PATCH**: Bug 修復 (Bug Fixes)
+
+### 2. **Single Source of Truth (單一真理來源)**
+**Git Tag** 是版本的觸發點，但程式碼必須同步。
+- **Trigger**: Release Workflow 由 `git push tag v*` 觸發。
+- **Rule**: 當 Tag `v1.0.0` 被推送時，以下檔案 **必須** 包含 `1.0.0`：
+  1. `pyproject.toml` (`version = "1.0.0"`)
+  2. `src/bat/config.py` (`VERSION = '1.0.0'`)
+
+### 3. **Changelog Policy**
+每次版本更新（Tagging）前，必須更新 `CHANGELOG.md`：
+- 將 `[Unreleased]` 變更移動到新的版本號標題下。
+- 遵循 "Keep a Changelog" 格式。
+
+### 4. **Branching Strategy**
+- **clean-repo**: 穩定的生產分支 (Production)。**只接受 PR 合併，禁止直接 Push。**
+- **feat/*** 或 **fix/*****: 開發分支。完成後發 PR 到 `clean-repo`。
+- **實驗性分支**: 命名為 `exp/<feature>`，可不遵守上述嚴格版本規則，但在合併回 `clean-repo` 前必須標準化。
 
 ### 1. Product Manager (PM)
 - **目標**: 需求轉規格
