@@ -8,6 +8,7 @@ class Config:
     # API Settings
     API_KEY = os.getenv('BINANCE_API_KEY')
     API_SECRET = os.getenv('BINANCE_API_SECRET')
+    VERSION = '1.0.0'
 
     # Trading Settings
     SYMBOL = 'BNBUSDT'
