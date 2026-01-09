@@ -1,0 +1,9 @@
+# This file defines who owns the source code configuration.
+# GitHub uses this to automatically request reviews when someone opens a PR.
+
+# Default owner for everything
+* @ben001109
+
+# Specific component owners (optional examples)
+# src/bat/tui/** @ben001109
+# src/bat/models/** @ben001109
