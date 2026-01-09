@@ -2,9 +2,9 @@ name: Flash CI
 
 on:
   push:
-    branches: [ "master", "main" ]
+    branches: ["master", "main", "clean-repo", "**"]
   pull_request:
-    branches: [ "master", "main" ]
+    branches: ["master", "main", "clean-repo"]
 
 jobs:
   test:
