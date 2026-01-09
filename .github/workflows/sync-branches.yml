@@ -1,0 +1,55 @@
+name: Auto Sync Features
+
+on:
+    push:
+        branches:
+            - clean-repo
+
+permissions:
+    contents: write
+
+jobs:
+    sync-branches:
+        runs-on: ubuntu-latest
+        steps:
+            - uses: actions/checkout@v4
+              with:
+                  fetch-depth: 0
+                  token: ${{ secrets.GITHUB_TOKEN }}
+
+            - name: Configure Git
+              run: |
+                  git config user.name "GitHub Actions Bot"
+                  git config user.email "actions@github.com"
+
+            - name: Sync Feature Branches
+              run: |
+                  # Fetch all remotes
+                  git fetch --all
+
+                  # List all remote feature branches
+                  # Filter for origin/feature/*
+                  branches=$(git branch -r | grep "origin/feature/" | sed 's/origin\///' | tr -d ' ')
+
+                  echo "Found feature branches: $branches"
+
+                  for branch in $branches; do
+                    echo "------------------------------------------------"
+                    echo "Syncing $branch with clean-repo..."
+                    
+                    # Checkout the feature branch
+                    git checkout $branch
+                    
+                    # Attempt merge
+                    if git merge origin/clean-repo --no-edit; then
+                      echo "Merge successful. Pushing..."
+                      git push origin $branch
+                    else
+                      echo "❌ Merge conflict or failure for $branch. Skipping."
+                      git merge --abort
+                    fi
+                    
+                    # Reset to clean state for next loop
+                    git checkout clean-repo
+                    echo "------------------------------------------------"
+                  done
