@@ -5,6 +5,8 @@ import pandas as pd
 import shutil
 import subprocess
 import torch
+import psutil
+import time
 from datetime import datetime, timezone
 
 from textual.app import App, ComposeResult
@@ -15,12 +17,77 @@ from bat.config import conf
 from bat.data.dataset import DataProcessor
 from bat.execution.broker import BinanceBroker
 from bat.execution.spot_client import async_exchange_info, async_exchange_info_all, async_historical_klines, create_spot_client
-from bat.auto_trader import decide_trade, compute_order_size, apply_confidence_threshold
+from bat.analyzer import AnalystAgent, compute_order_size, apply_confidence_threshold
 from bat.simulation import simulate_and_collect, append_kline, append_trade_event, write_klines
 from bat.logger import get_logger, install_crash_handler
 from bat.training import train_and_backtest, set_stop_training
 from bat.training import should_stop_training
 from bat.tui.line_chart import LineChart
+
+
+class PerformanceMonitor(Static):
+    """Widget to display system and bot performance metrics."""
+    
+    def on_mount(self) -> None:
+        self.update_stats()
+        self.set_interval(2.0, self.update_stats)
+
+    def update_stats(self) -> None:
+        # Hardware Info
+        device_name = str(conf.DEVICE).upper()
+        if "MPS" in device_name:
+            device_icon = "🍎"
+        elif "CUDA" in device_name:
+            device_icon = "🚀"
+        else:
+            device_icon = "🖥️"
+        
+        # RAM Usage
+        mem = psutil.virtual_memory()
+        mem_gb = mem.used / (1024 ** 3)
+        mem_percent = mem.percent
+        
+        # CPU Usage
+        cpu_percent = psutil.cpu_percent()
+
+        # Bot Uptime (assuming app start time could be tracked, but let's just show current time for now or just system loads)
+        # Actually let's show inference count or last inference time if we can access it via App
+        # accessing app from widget: self.app
+        app = self.app
+        last_inf = getattr(app, "last_inference_time", None)
+        inf_text = f"{last_inf*1000:.0f}ms" if last_inf else "-"
+        
+        # GPU Info
+        gpu_info = ""
+        if "CUDA" in device_name and torch.cuda.is_available():
+            try:
+                vram_alloc = torch.cuda.memory_allocated() / (1024**3)
+                vram_reserved = torch.cuda.memory_reserved() / (1024**3)
+                gpu_info = f"🎮 VRAM: {vram_alloc:.2f}/{vram_reserved:.2f} GB\n"
+            except:
+                pass
+        elif "MPS" in device_name:
+            # MPS Shared Memory (Unified)
+            # torch.mps.current_allocated_memory() might be available in newer builds
+            try:
+                # Use getattr to avoid import errors on non-Mac
+                mps_alloc = 0.0
+                if hasattr(torch.backends.mps, "is_available") and torch.backends.mps.is_available():
+                     # Newer pytorch might have stats
+                     pass
+                # For now, just indicate Unified
+                gpu_info = "🎮 VRAM: Unified (See RAM)\n"
+            except:
+                pass
+
+        content = (
+            f"\n[bold underline]系統效能[/]\n"
+            f"{device_icon} 裝置: {device_name}\n"
+            f"🧠 RAM: {mem_gb:.1f}GB ({mem_percent}%)\n"
+            f"{gpu_info}"
+            f"⚙️ CPU: {cpu_percent}%\n"
+        )
+        self.update(content)
 
 
 class CryptoApp(App):
@@ -57,11 +124,11 @@ class CryptoApp(App):
     price_polling = False
     usdt_symbols = set()
     pretrain_done = False
-    trained_rows = 0
     train_progress_path = "data/train_progress.json"
     simulation_future = None
     train_collect_future = None
     pending_training = False
+    analyst_agent = None
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -86,9 +153,17 @@ class CryptoApp(App):
             yield Input(value="1m", placeholder="輪詢間隔，如 10s/1m/120", id="input_poll_interval")
             yield Label("模型信心門檻(%)", classes="chart_title")
             yield Input(value="55", placeholder="模型信心門檻(0-100)", id="input_confidence_threshold")
+            yield Label("風險偏好", classes="chart_title")
+            yield Select(
+                [("保守", "CONSERVATIVE"), ("標準", "STANDARD"), ("積極", "AGGRESSIVE")],
+                value=conf.RISK_PROFILE,
+                id="select_risk_profile",
+            )
             yield Button("🚀 開始交易/查詢餘額", id="btn_paper", variant="success")
             yield Button("🤖 自動交易", id="btn_auto", variant="success")
             yield Button("🛑 停止/重置", id="btn_stop", variant="error")
+            
+            yield PerformanceMonitor(id="perf_monitor", classes="box")
 
             yield Static(self._mode_label_text(), id="mode_label", markup=True)
         with Container(id="content"):
@@ -422,6 +497,7 @@ class CryptoApp(App):
                     last_report["rows"] = total
                     bar = self._progress_bar(percent)
                     self.log_train(f">>> [歷史] {bar} 已下載 {total} 筆...")
+                    self._update_train_status_threadsafe({"progress": percent, "status": "Downloading"})
 
             klines = await async_historical_klines(
                 client,
@@ -447,6 +523,7 @@ class CryptoApp(App):
                     self.log_train,
                     f">>> [歷史] 合併中 {bar} {done}/{total}",
                 )
+                self._update_train_status_threadsafe({"progress": percent, "status": "Merging"})
 
             count = await asyncio.to_thread(
                 write_klines,
@@ -645,7 +722,13 @@ class CryptoApp(App):
                     await asyncio.sleep(self._interval_seconds(poll_interval))
                     continue
                 self.warned_insufficient = False
-                decision, risk = decide_trade(klines)
+                
+                # Check / Init Agent
+                if not self.analyst_agent or self.analyst_agent.symbol != symbol:
+                   self.analyst_agent = AnalystAgent(client=broker.client, mode='lstm', symbol=symbol, interval=interval)
+                
+                decision, risk = await self.analyst_agent.analyze(klines)
+
                 if decision is None or risk is None:
                     self.log_error("[自動] 無法取得交易決策，跳過本輪")
                 else:
@@ -734,6 +817,13 @@ class CryptoApp(App):
         try:
             balances = await self._fetch_balances(broker)
             self._update_user_info(balances)
+
+            # Data Integrity Check
+            self.log_msg("[系統] 正在檢查歷史資料完整性...")
+            agent = AnalystAgent(client=broker.client, mode='lstm', symbol=symbol, interval=interval)
+            await agent.ensure_data_integrity()
+            self.log_msg("[系統] 資料完整性檢查完成")
+
             klines = await broker.get_klines(symbol=symbol, interval=interval, limit=2)
             if klines:
                 last_price = float(klines[-1][4])
@@ -798,7 +888,11 @@ class CryptoApp(App):
             self.run_worker(self.action_init_fetch(), exclusive=False)
             self.run_worker(self._close_price_broker(), exclusive=False)
         elif event.select.id == "select_symbol":
-            self.saved_symbol = event.value
+             self.analyst_agent = None
+             self.saved_symbol = event.value
+        elif event.select.id == "select_risk_profile":
+             conf.RISK_PROFILE = str(event.value)
+             self.log_msg(f"風險偏好已更新為: {conf.RISK_PROFILE}")
         self._save_settings()
 
     def on_input_changed(self, event: Input.Changed) -> None:

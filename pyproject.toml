@@ -14,5 +14,6 @@ dependencies = [
     "scikit-learn>=1.8.0",
     "textual>=6.11.0",
     "torch>=2.9.1",
+    "psutil>=6.0.0",
     "tqdm>=4.67.1",
 ]

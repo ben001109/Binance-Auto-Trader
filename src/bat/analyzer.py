@@ -1,70 +1,55 @@
 import asyncio
+import os
+from dataclasses import dataclass
+
 import numpy as np
 import pandas as pd
 import pandas_ta as ta
 import torch
 import torch.nn as nn
 from sklearn.ensemble import RandomForestClassifier
-from sklearn.preprocessing import MinMaxScaler
 
+from bat.config import conf
 from bat.execution.spot_client import async_klines, create_spot_client
 from bat.logger import get_logger
-# 假設你有 config.py，若無可直接填入 .env 讀取邏輯
-try:
-    from bat.config import conf
-except ImportError:
-    # Fallback 如果沒有 config 模組
-    from dotenv import load_dotenv
-    load_dotenv()
-    class Config:
-        API_KEY = os.getenv('BINANCE_API_KEY')
-        API_SECRET = os.getenv('BINANCE_API_SECRET')
-        SYMBOL = 'BTCUSDT'
-        INTERVAL = '15m'
-        DEVICE = torch.device("cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu")
-    conf = Config()
+from bat.models.lstm import CryptoLSTM
+from bat.data.dataset import DataProcessor
+from bat.training import RiskParams, suggest_risk_params_from_model, _load_training_data
+from bat.data.integrity import check_data_gaps, heal_data_gaps, merge_healed_data
 
 # ==========================================
-# 1. 深度學習模型定義 (LSTM)
+# Data Structures
 # ==========================================
-class CryptoLSTM(nn.Module):
-    def __init__(self, input_size, hidden_size, num_layers=1):
-        super(CryptoLSTM, self).__init__()
-        self.hidden_size = hidden_size
-        self.num_layers = num_layers
-        self.lstm = nn.LSTM(input_size, hidden_size, num_layers, batch_first=True)
-        self.fc = nn.Linear(hidden_size, 1)
 
-    def forward(self, x):
-        h0 = torch.zeros(self.num_layers, x.size(0), self.hidden_size).to(conf.DEVICE)
-        c0 = torch.zeros(self.num_layers, x.size(0), self.hidden_size).to(conf.DEVICE)
-        out, _ = self.lstm(x, (h0, c0))
-        out = out[:, -1, :]
-        out = self.fc(out)
-        return out
+@dataclass
+class TradeDecision:
+    action: str          # BUY, SELL, HOLD
+    confidence: float    # 0.0 - 1.0
+    current_price: float
+    predicted_price: float
+    invest_amount: float # Quote asset amount to use (0.0 if not decided here)
+    source: str          # model, rsi, ml, fallback, filtered
+    signal: str          # Original signal before filtering
 
 # ==========================================
-# 2. 策略基類 (Base Strategy)
+# Base Strategy
 # ==========================================
+
 class BaseStrategy:
-    # 預設值還是可以用 conf，但現在允許覆蓋 (override)
-    def __init__(self, client, symbol=conf.SYMBOL, interval=conf.INTERVAL):
+    def __init__(self, client, symbol=None, interval=None):
         self.client = client
-        self.symbol = symbol      # 使用傳入的參數
-        self.interval = interval  # 使用傳入的參數
+        self.symbol = symbol or conf.SYMBOL
+        self.interval = interval or conf.INTERVAL
+        self.logger = get_logger(f"bat.analyst.{self.__class__.__name__}")
 
     async def fetch_data(self, limit=100):
-        print(f"[{self.__class__.__name__}] 正在獲取 {self.symbol} ({self.interval}) 數據...")
-        logger = get_logger("bat.analyzer")
-        logger.info("Fetch data: %s %s limit=%s", self.symbol, self.interval, limit)
-
+        # self.logger.debug("Fetch data: %s %s limit=%s", self.symbol, self.interval, limit)
         klines = await async_klines(
             self.client,
             self.symbol,
             self.interval,
             limit=limit
         )
-
         df = pd.DataFrame(klines, columns=[
             'timestamp', 'open', 'high', 'low', 'close', 'volume',
             'close_time', 'q_vol', 'trades', 'tb_base', 'tb_quote', 'ignore'
@@ -74,35 +59,56 @@ class BaseStrategy:
         df[cols] = df[cols].astype(float)
         return df
 
-    async def analyze(self):
-        raise NotImplementedError("子類別必須實作 analyze 方法")
+    async def analyze(self, klines=None) -> tuple[TradeDecision, RiskParams | None]:
+        raise NotImplementedError("Subclasses must implement analyze")
 
 # ==========================================
-# 3. 傳統技術指標策略 (RSI)
+# Strategies
 # ==========================================
+
 class RSIStrategy(BaseStrategy):
-    async def analyze(self):
-        df = await self.fetch_data(limit=100)
+    async def analyze(self, klines=None):
+        if klines is None:
+            df = await self.fetch_data(limit=100)
+        else:
+            df = klines if isinstance(klines, pd.DataFrame) else pd.DataFrame(klines) # Handle raw list if passed
 
-        # 計算 RSI
+        # Ensure numeric
+        cols = ['close']
+        for c in cols:
+            if c in df.columns:
+                df[c] = df[c].astype(float)
+
         df['rsi'] = df.ta.rsi(length=14)
         last_row = df.iloc[-1]
+        current_price = float(last_row['close'])
+        
+        rsi_val = last_row['rsi']
+        self.logger.info(f"RSI: {rsi_val:.2f} (Price: {current_price})")
 
-        print(f">>> RSI: {last_row['rsi']:.2f} (Price: {last_row['close']})")
+        signal = "HOLD"
+        confidence = 0.0
+        
+        if rsi_val < 30:
+            signal = "BUY"
+            confidence = (30 - rsi_val) / 30.0 # Simple linear confidence
+        elif rsi_val > 70:
+            signal = "SELL"
+            confidence = (rsi_val - 70) / 30.0
 
-        if last_row['rsi'] < 30:
-            return "BUY_SIGNAL", 0.8 # 訊號, 信心度
-        elif last_row['rsi'] > 70:
-            return "SELL_SIGNAL", 0.8
-        else:
-            return "HOLD", 0.0
+        decision = TradeDecision(
+            action=signal,
+            confidence=min(confidence + 0.5, 1.0) if signal != "HOLD" else 0.0,
+            current_price=current_price,
+            predicted_price=current_price, # RSI doesn't predict price
+            invest_amount=0.0,
+            source="rsi",
+            signal=signal
+        )
+        return decision, None # No specific risk params for RSI yet
 
-# ==========================================
-# 4. 機器學習策略 (Random Forest)
-# ==========================================
 class MLStrategy(BaseStrategy):
-    def __init__(self, client, symbol=conf.SYMBOL, interval=conf.INTERVAL):
-        # 顯式呼叫父類初始化，並傳遞參數
+    def __init__(self, client, symbol=None, interval=None):
         super().__init__(client, symbol, interval)
         self.model = None
         self.features = ['RSI_14', 'SMA_10', 'SMA_50', 'CLOSE_PCT']
@@ -117,7 +123,7 @@ class MLStrategy(BaseStrategy):
         return df
 
     def train(self, df):
-        print(">>> 訓練 Random Forest 模型...")
+        self.logger.info("Training Random Forest model...")
         df = self.prepare_features(df)
         df['Target'] = (df['close'].shift(-1) > df['close']).astype(int)
         df.dropna(inplace=True)
@@ -125,146 +131,328 @@ class MLStrategy(BaseStrategy):
         X = df[self.features]
         y = df['Target']
 
-        # 簡單切分
+        if len(X) < 50:
+             self.logger.warning("Not enough data to train RF")
+             return
+
         split = int(len(X) * 0.8)
         X_train, y_train = X.iloc[:split], y.iloc[:split]
 
         self.model = RandomForestClassifier(n_estimators=100, min_samples_split=10, random_state=42)
         self.model.fit(X_train, y_train)
-        print(">>> 模型訓練完成")
+        self.logger.info("Model training complete")
 
-    async def analyze(self):
-        # 1. 獲取足夠數據來訓練 + 預測
-        df = await self.fetch_data(limit=1000)
+    async def analyze(self, klines=None):
+        if klines is None:
+            df = await self.fetch_data(limit=1000)
+        else:
+            df = klines if isinstance(klines, pd.DataFrame) else pd.DataFrame(klines)
 
-        # 2. 如果沒模型就先訓練
+        cols = ['close']
+        for c in cols:
+            if c in df.columns:
+                 df[c] = df[c].astype(float)
+
         if self.model is None:
             self.train(df)
 
-        # 3. 準備最新數據進行預測
-        df_processed = self.prepare_features(df)
-        last_row = df_processed.iloc[[-1]][self.features]
+        if self.model is None:
+             return TradeDecision("HOLD", 0.0, 0.0, 0.0, 0.0, "ml_error", "HOLD"), None
 
+        df_processed = self.prepare_features(df)
+        if df_processed.empty:
+             return TradeDecision("HOLD", 0.0, 0.0, 0.0, 0.0, "ml_nodata", "HOLD"), None
+
+        last_row = df_processed.iloc[[-1]][self.features]
         prediction = self.model.predict(last_row)[0]
         probs = self.model.predict_proba(last_row)[0]
         confidence = probs[prediction]
+        current_price = float(df.iloc[-1]['close'])
 
-        signal = "BUY_SIGNAL" if prediction == 1 else "SELL_SIGNAL"
-        return signal, confidence
+        signal = "BUY" if prediction == 1 else "SELL"
+        
+        decision = TradeDecision(
+            action=signal,
+            confidence=float(confidence),
+            current_price=current_price,
+            predicted_price=current_price,
+            invest_amount=0.0,
+            source="ml",
+            signal=signal
+        )
+        return decision, None
 
-# ==========================================
-# 5. 深度學習策略 (LSTM)
-# ==========================================
-class DeepStrategy(BaseStrategy):
-    # [FIX 2] 修正 __init__，必須接收 symbol 和 interval 並傳給父類
-    def __init__(self, client, symbol=conf.SYMBOL, interval=conf.INTERVAL):
+class LSTMStrategy(BaseStrategy):
+    def __init__(self, client, symbol=None, interval=None):
         super().__init__(client, symbol, interval)
-        self.model = None
-        self.scaler = MinMaxScaler(feature_range=(0, 1))
-        self.seq_length = 60
-        self.hidden_size = 64
+        self.model_path = os.path.join("data", "lstm_model.pth")
+        self.training_data_path = os.path.join("data", "history.csv")
+        self._missing_model_warned = False
+        self.processor = None
+        self.train_df = None
 
-    def create_sequences(self, data):
-        xs, ys = [], []
-        for i in range(len(data) - self.seq_length):
-            x = data[i:(i + self.seq_length)]
-            y = data[i + self.seq_length]
-            xs.append(x)
-            ys.append(y)
-        return np.array(xs), np.array(ys)
-
-    def train(self, df):
-        print(f">>> 訓練 LSTM 模型 (Device: {conf.DEVICE})...")
-        data = df[['close']].values
-        data_scaled = self.scaler.fit_transform(data)
-
-        X, y = self.create_sequences(data_scaled)
-
-        X_tensor = torch.from_numpy(X).float().to(conf.DEVICE)
-        y_tensor = torch.from_numpy(y).float().to(conf.DEVICE)
-
-        # 簡單訓練迴圈 (不使用 DataLoader 以簡化範例)
-        self.model = CryptoLSTM(1, self.hidden_size).to(conf.DEVICE)
-        criterion = nn.MSELoss()
-        optimizer = torch.optim.Adam(self.model.parameters(), lr=0.001)
-
-        self.model.train()
-        for epoch in range(20): # 20 Epochs
-            optimizer.zero_grad()
-            output = self.model(X_tensor) # 注意：這裡維度要對齊
-            output = output.squeeze() # (N, 1) -> (N)
-            loss = criterion(output, y_tensor.squeeze())
-            loss.backward()
-            optimizer.step()
-
-        print(f">>> LSTM 訓練完成 (Loss: {loss.item():.4f})")
-
-    async def analyze(self):
-        df = await self.fetch_data(limit=1000)
-
-        if self.model is None:
-            self.train(df)
-
-        self.model.eval()
-        last_seq = df[['close']].values[-self.seq_length:]
-        last_seq_scaled = self.scaler.transform(last_seq)
-
-        X_input = torch.from_numpy(last_seq_scaled).float().unsqueeze(0).to(conf.DEVICE) # (1, 60, 1)
-
-        with torch.no_grad():
-            pred_scaled = self.model(X_input).cpu().numpy()
-
-        pred_price = self.scaler.inverse_transform(pred_scaled)[0][0]
-        current_price = df.iloc[-1]['close']
-
-        print(f">>> LSTM 預測: {pred_price:.2f} (現價: {current_price})")
-
-        if pred_price > current_price * 1.001:
-            return "BUY_SIGNAL", (pred_price - current_price)/current_price
-        elif pred_price < current_price * 0.999:
-            return "SELL_SIGNAL", (current_price - pred_price)/current_price
+    def _prepare_market_df(self, klines) -> pd.DataFrame:
+        if isinstance(klines, pd.DataFrame):
+            df = klines.copy()
         else:
-            return "HOLD", 0.0
+            df = pd.DataFrame(klines, columns=[
+                "timestamp", "open", "high", "low", "close", "volume",
+                "close_time", "q_vol", "trades", "tb_base", "tb_quote", "ignore"
+            ])
+        cols = ["open", "high", "low", "close", "volume"]
+        for c in cols:
+            if c in df.columns:
+                df[c] = df[c].astype(float)
+        return df
 
-# ==========================================
-# 6. 統一入口工廠
-# ==========================================
-# [FIX 3] 修正縮排：這個函式應該在最外層，不能縮在 class 裡面
-async def run_analysis_module(mode: str = 'rsi', symbol: str = 'BTCUSDT', interval: str = '15m'):
-    """
-    現在這個函數接收 symbol 和 interval 了！
-    """
-    conf.validate_api_config()
-    logger = get_logger("bat.analyzer")
-    client = create_spot_client()
-
-    try:
-        strategy = None
-        # 初始化時將 symbol, interval 傳進去
-        if mode == 'rsi':
-            strategy = RSIStrategy(client, symbol, interval)
-        elif mode == 'ml':
-            strategy = MLStrategy(client, symbol, interval)
-        elif mode == 'lstm':
-            strategy = DeepStrategy(client, symbol, interval)
-        else:
-            return "UNKNOWN", 0.0
-
-        print(f"=== 執行分析: {mode.upper()} | {symbol} | {interval} ===")
-        logger.info("Run analysis: mode=%s symbol=%s interval=%s", mode, symbol, interval)
+    def _load_model(self) -> CryptoLSTM | None:
+        if not os.path.exists(self.model_path):
+            return None
+        model = CryptoLSTM(
+            input_dim=len(conf.FEATURE_COLS),
+            hidden_dim=conf.HIDDEN_SIZE,
+            num_layers=conf.NUM_LAYERS,
+            dropout=conf.DROPOUT
+        ).to(conf.DEVICE)
         try:
-            return await strategy.analyze()
+            state = torch.load(self.model_path, map_location=conf.DEVICE)
+            model.load_state_dict(state)
+        except Exception as exc:
+            self.logger.warning(f"Model load failed ({self.model_path}): {exc}")
+            return None
+        model.eval()
+        return model
+
+    def _predict_probs(self, model: CryptoLSTM, processor: DataProcessor, market_df: pd.DataFrame) -> np.ndarray:
+        data_scaled, _ = processor.process_for_inference(market_df, conf.FEATURE_COLS)
+        if len(data_scaled) < conf.SEQ_LENGTH:
+            raise ValueError("Insufficient data for prediction")
+        last_seq = data_scaled[-conf.SEQ_LENGTH:]
+        x = torch.FloatTensor(last_seq).unsqueeze(0).to(conf.DEVICE)
+        with torch.no_grad():
+            logits = model(x)
+            probs = torch.softmax(logits, dim=1).cpu().numpy()[0]
+        return probs
+
+    def _fallback_decision(self, market_df: pd.DataFrame) -> tuple[TradeDecision, RiskParams | None]:
+        closes = market_df["close"].astype(float)
+        returns = closes.pct_change().dropna()
+        if returns.empty:
+            return TradeDecision("HOLD", 0.0, 0.0, 0.0, 0.0, "fallback_nodata", "HOLD"), None
+        
+        last_return = float(returns.iloc[-1])
+        vol = float(returns.std()) if len(returns) > 1 else 0.0
+        threshold = max(0.001, vol * 1.5)
+        
+        if last_return > threshold:
+            action = "BUY"
+        elif last_return < -threshold:
+            action = "SELL"
+        else:
+            action = "HOLD"
+            
+        confidence = 0.0
+        if vol > 0:
+            confidence = min(abs(last_return) / (vol * 3.0), 1.0)
+            
+        current_price = float(closes.iloc[-1])
+        predicted_price = current_price * (1.0 + last_return)
+        
+        risk = RiskParams(
+            stop_loss=min(max(vol * 2.0, 0.01), 0.12),
+            take_profit=min(max(vol * 3.0, 0.02), 0.2),
+            max_dd_stop=min(max(vol * 6.0, 0.05), 0.3),
+            position_splits=3,
+        )
+        
+        decision = TradeDecision(
+            action=action,
+            confidence=confidence,
+            current_price=current_price,
+            predicted_price=predicted_price,
+            invest_amount=0.0,
+            source="fallback",
+            signal=action,
+        )
+        return decision, risk
+
+    async def analyze(self, klines=None) -> tuple[TradeDecision, RiskParams | None]:
+        if klines is None:
+            # If no klines provided, fetch them (usually for CLI usage)
+            market_df = await self.fetch_data(limit=conf.SEQ_LENGTH + 50)
+        else:
+            market_df = self._prepare_market_df(klines)
+
+        if len(market_df) < conf.SEQ_LENGTH + 1:
+            self.logger.warning("Insufficient market data for prediction")
+            return TradeDecision("HOLD", 0.0, 0.0, 0.0, 0.0, "insufficient_data", "HOLD"), None
+
+        model = self._load_model()
+        if model is None:
+            if not self._missing_model_warned:
+                self.logger.warning(f"Model not found: {self.model_path}, using fallback")
+                self._missing_model_warned = True
+            return self._fallback_decision(market_df)
+
+        if self.processor is None:
+            self.processor = DataProcessor()
+            # Try fit processor on training data for better scaling, else use market data
+            try:
+                if self.train_df is None:
+                    self.train_df = _load_training_data(self.training_data_path)
+                self.processor.process_for_training(self.train_df, conf.FEATURE_COLS)
+            except Exception:
+                self.logger.warning("Training data unavailable (or load failed), fitting processor on market data only")
+                self.train_df = market_df
+                self.processor.process_for_training(self.train_df, conf.FEATURE_COLS)
+
+        try:
+            probs = self._predict_probs(model, self.processor, market_df)
+        except ValueError:
+             return self._fallback_decision(market_df)
+
+        expected_return = (probs[2] - probs[0]) * conf.RETURN_THRESHOLD
+        current_price = float(market_df.iloc[-1]["close"])
+        predicted_price = current_price * (1.0 + expected_return)
+
+        # Risk Calculation
+        try:
+            model_risk = suggest_risk_params_from_model(model, self.processor, self.train_df)
         except Exception:
-            logger.exception("Strategy failed, fallback to ERROR result")
-            return "ERROR", 0.0
+            self.logger.exception("Failed to derive risk from model, using default")
+            model_risk = RiskParams(stop_loss=0.02, take_profit=0.05, max_dd_stop=0.2, position_splits=3)
+        
+        market_vol = float(market_df["close"].pct_change().std())
+        risk = self._blend_risk_params(model_risk, market_vol)
 
-    except Exception as e:
-        print(f"錯誤: {e}")
-        logger.exception("Analysis failed")
-        return "ERROR", 0.0
-    finally:
-        client = None
+        # Signal Logic
+        signal_idx = int(np.argmax(probs))
+        signal_map = {0: "SELL", 1: "HOLD", 2: "BUY"}
+        signal = signal_map.get(signal_idx, "HOLD")
+        confidence = float(np.max(probs))
 
-if __name__ == "__main__":
-    # 測試用：可以手動改這裡來測不同模式
-    asyncio.run(run_analysis_module('lstm'))
+        decision = TradeDecision(
+            action=signal,
+            confidence=confidence,
+            current_price=current_price,
+            predicted_price=predicted_price,
+            invest_amount=0.0,
+            source="model",
+            signal=signal
+        )
+        return decision, risk
+
+    def _blend_risk_params(self, model_params: RiskParams, market_vol: float) -> RiskParams:
+        # Risk Multipliers based on RISK_PROFILE
+        profile = getattr(conf, 'RISK_PROFILE', 'STANDARD')
+        
+        if profile == 'CONSERVATIVE':
+            sl_mult, tp_mult, dd_mult = 1.5, 2.0, 4.0
+        elif profile == 'AGGRESSIVE':
+            sl_mult, tp_mult, dd_mult = 3.0, 5.0, 8.0
+        else: # STANDARD
+            sl_mult, tp_mult, dd_mult = 2.0, 3.0, 6.0
+
+        stop_loss = min(max(max(model_params.stop_loss, market_vol * sl_mult), 0.01), 0.15)
+        take_profit = min(max(max(model_params.take_profit, market_vol * tp_mult), 0.02), 0.25)
+        max_dd_stop = min(max(max(model_params.max_dd_stop, market_vol * dd_mult), 0.05), 0.4)
+        
+        return RiskParams(
+            stop_loss=stop_loss,
+            take_profit=take_profit,
+            max_dd_stop=max_dd_stop,
+            position_splits=model_params.position_splits,
+        )
+
+# ==========================================
+# Analyst Agent Factory
+# ==========================================
+
+class AnalystAgent:
+    def __init__(self, client=None, mode='lstm', symbol=None, interval=None):
+        self.client = client or create_spot_client(is_testnet=conf.IS_TESTNET)
+        self.mode = mode
+        self.symbol = symbol or conf.SYMBOL
+        self.interval = interval or conf.INTERVAL
+        self.logger = get_logger("bat.analyst")
+        
+        if mode == 'rsi':
+            self.strategy = RSIStrategy(self.client, self.symbol, self.interval)
+        elif mode == 'ml':
+            self.strategy = MLStrategy(self.client, self.symbol, self.interval)
+        elif mode == 'lstm':
+            self.strategy = LSTMStrategy(self.client, self.symbol, self.interval)
+        else:
+             self.strategy = LSTMStrategy(self.client, self.symbol, self.interval) # Default
+
+    async def analyze(self, klines=None) -> tuple[TradeDecision, RiskParams | None]:
+        try:
+             return await self.strategy.analyze(klines)
+        except Exception as e:
+             self.logger.exception(f"Analysis Failed in {self.mode}")
+             # Return error decision
+             return TradeDecision("HOLD", 0.0, 0.0, 0.0, 0.0, "error", "HOLD"), None
+
+    async def ensure_data_integrity(self):
+        """
+        Check and heal gaps in historical data.
+        """
+        if self.mode != 'lstm':
+            return
+            
+        self.logger.info("Checking data integrity...")
+        strategy = self.strategy
+        if hasattr(strategy, 'training_data_path') and os.path.exists(strategy.training_data_path):
+             # Load existing history
+             try:
+                 df = pd.read_csv(strategy.training_data_path)
+                 interval_ms = 15 * 60 * 1000 # Default to 15m for now, or parse self.interval
+                 # Parse interval to ms
+                 unit = self.interval[-1]
+                 val = int(self.interval[:-1])
+                 if unit == 'm': interval_ms = val * 60 * 1000
+                 elif unit == 'h': interval_ms = val * 60 * 60 * 1000
+                 elif unit == 'd': interval_ms = val * 24 * 60 * 60 * 1000
+                 
+                 gaps = check_data_gaps(df, interval_ms)
+                 if gaps:
+                     self.logger.warning(f"Found {len(gaps)} data gaps. Healing...")
+                     new_chunks = await heal_data_gaps(self.client, self.symbol, self.interval, gaps)
+                     if new_chunks:
+                         df_healed = merge_healed_data(df, new_chunks)
+                         df_healed.to_csv(strategy.training_data_path, index=False)
+                         self.logger.info(f"Healed data saved to {strategy.training_data_path}")
+                     else:
+                         self.logger.warning("No data found to heal gaps.")
+                 else:
+                     self.logger.info("Data Integrity Check Passed: No gaps found.")
+             except Exception as e:
+                 self.logger.error(f"Data integrity check failed: {e}")
+
+# ==========================================
+# Legacy Helper (for Backwards Compatibility if needed)
+# ==========================================
+
+async def run_analysis_module(mode: str = 'rsi', symbol: str = 'BTCUSDT', interval: str = '15m'):
+    agent = AnalystAgent(mode=mode, symbol=symbol, interval=interval)
+    decision, risk = await agent.analyze()
+    print(f"Decision: {decision.action} | Conf: {decision.confidence:.2f} | Source: {decision.source}")
+    return decision.action, decision.confidence
+
+# ==========================================
+# Legacy / Utility Helpers (Moved from auto_trader.py)
+# ==========================================
+
+def compute_order_size(quote_balance: float, market_vol: float) -> float:
+    fraction = min(max(market_vol * 5.0, 0.02), 0.2)
+    return quote_balance * fraction
+
+def apply_confidence_threshold(decision: TradeDecision | None, threshold: float) -> TradeDecision | None:
+    if decision is None:
+        return None
+    if decision.confidence < threshold:
+        decision.action = "HOLD"
+        decision.source = "filtered"
+    else:
+        decision.action = decision.signal
+    return decision
