@@ -55,9 +55,9 @@ jobs:
         run: |
           mkdir -p release
           if [[ "${{ runner.os }}" == "Windows" ]]; then
-            cp "dist/BAT.exe" "release/BAT-${{ runner.os }}.exe"
+            powershell Compress-Archive -Path "dist/BAT.exe" -DestinationPath "release/BAT-${{ runner.os }}.zip"
           else
-            cp "dist/BAT" "release/BAT-${{ runner.os }}"
+            tar -czvf "release/BAT-${{ runner.os }}.tar.gz" -C dist BAT
           fi
 
       - name: Upload artifacts
