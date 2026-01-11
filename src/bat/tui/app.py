@@ -821,7 +821,10 @@ class CryptoApp(App):
             # Data Integrity Check
             self.log_msg("[系統] 正在檢查歷史資料完整性...")
             agent = AnalystAgent(client=broker.client, mode='lstm', symbol=symbol, interval=interval)
-            await agent.ensure_data_integrity()
+            
+            # Use on_status callback to show progress in UI
+            await agent.ensure_data_integrity(on_status=lambda msg: self.log_msg(f"[檢查] {msg}"))
+            
             self.log_msg("[系統] 資料完整性檢查完成")
 
             klines = await broker.get_klines(symbol=symbol, interval=interval, limit=2)

@@ -393,7 +393,7 @@ class AnalystAgent:
              # Return error decision
              return TradeDecision("HOLD", 0.0, 0.0, 0.0, 0.0, "error", "HOLD"), None
 
-    async def ensure_data_integrity(self):
+    async def ensure_data_integrity(self, on_status=None):
         """
         Check and heal gaps in historical data.
         Runs blocking I/O in a separate thread.
@@ -401,7 +401,10 @@ class AnalystAgent:
         if self.mode != 'lstm':
             return
             
-        self.logger.info("Checking data integrity...")
+        msg = "Checking data integrity..."
+        self.logger.info(msg)
+        if on_status: on_status(msg)
+
         strategy = self.strategy
         
         if hasattr(strategy, 'training_data_path') and os.path.exists(strategy.training_data_path):
@@ -423,14 +426,21 @@ class AnalystAgent:
                     return None, []
 
             # Run read/check in thread
+            if on_status: on_status("正在讀取並檢查歷史資料 (可能需要幾秒鐘)...")
             df, gaps = await asyncio.to_thread(_check_and_heal_sync)
             
             if gaps:
-                self.logger.warning(f"Found {len(gaps)} data gaps. Healing...")
+                msg = f"發現 {len(gaps)} 個資料缺口，正在修補..."
+                self.logger.warning(msg)
+                if on_status: on_status(msg)
+
                 # Healing is async IO, can run on main loop
                 new_chunks = await heal_data_gaps(self.client, self.symbol, self.interval, gaps)
                 
                 if new_chunks:
+                    msg = f"下載了 {len(new_chunks)} 筆新資料，正在寫入..."
+                    if on_status: on_status(msg)
+
                     # merging and saving is blocking again
                     def _save_healed():
                         df_healed = merge_healed_data(df, new_chunks)
@@ -438,10 +448,13 @@ class AnalystAgent:
                     
                     await asyncio.to_thread(_save_healed)
                     self.logger.info(f"Healed data saved to {strategy.training_data_path}")
+                    if on_status: on_status("資料修補完成並已存檔。")
                 else:
                     self.logger.warning("No data found to heal gaps.")
+                    if on_status: on_status("警告: 無法下載缺口資料。")
             else:
                 self.logger.info("Data Integrity Check Passed: No gaps found.")
+                if on_status: on_status("資料完整性檢查通過。")
 
 # ==========================================
 # Legacy Helper (for Backwards Compatibility if needed)
