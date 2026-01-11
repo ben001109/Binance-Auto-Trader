@@ -406,6 +406,8 @@ class CryptoApp(App):
                 self.background_training_task.cancel()
             if self.model_watch_task and not self.model_watch_task.done():
                 self.model_watch_task.cancel()
+            if hasattr(self, "integrity_task") and self.integrity_task and not self.integrity_task.done():
+                self.integrity_task.cancel()
 
     async def on_shutdown(self) -> None:
         set_stop_training(True)
@@ -549,9 +551,18 @@ class CryptoApp(App):
             # Validate Data Integrity before training (Corrupt -> Redownload, Incremental -> Append)
             self.log_train(">>> [訓練] 驗證歷史資料完整性...")
             agent = AnalystAgent(mode='lstm', symbol=symbol, interval=interval)
+            
+            # fix(logic): make integrity check cancellable
+            self.integrity_task = asyncio.create_task(
+                agent.ensure_data_integrity(on_status=lambda msg: self.log_train(f">>> [資料] {msg}"))
+            )
             try:
-                await agent.ensure_data_integrity(on_status=lambda msg: self.log_train(f">>> [資料] {msg}"))
+                await self.integrity_task
+            except asyncio.CancelledError:
+                self.log_train("[bold yellow]⚠️ 資料完整性檢查已取消[/]")
+                raise
             finally:
+                self.integrity_task = None
                 # fix(logic): safe client closure
                 if hasattr(agent.client, "close_connection"):
                     await asyncio.to_thread(agent.client.close_connection)

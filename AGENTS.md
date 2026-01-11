@@ -168,6 +168,7 @@ PM -> User: "任務完成。"
 | `timedate` | Fix `integrity.py` using local time for API calls (force UTC). | ✅ Fixed |
 | `data` | Fix `NoneType` error in `merge_healed_data` on full redownload. | ✅ Fixed |
 | `data` | Fix `pd.to_datetime` mixed timezone warnings. | ✅ Fixed |
+| `tui` | Fix Stop button ignoring data download/check tasks. | ✅ Fixed |
 | `broker` | Fix Resource Leak: Client session not closed in `close()`. | ✅ Fixed |
 | `broker` | Fix Race Condition: Concurrent `init_client` calls. | ✅ Fixed |
 | `training` | Fix Error Handling: Wrap `on_epoch_loss` callback. | ✅ Fixed |
