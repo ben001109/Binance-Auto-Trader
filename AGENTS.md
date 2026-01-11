@@ -160,3 +160,11 @@ PM -> User: "任務完成。"
 - **Kernel Monitor Agent**：監控記憶體與 CPU，防止 OOM。
 - **Network Sentinel**：僅允許白名單 API 網段。
 - **Cron Scheduler**：背景排程定期訓練與評估。
+
+## 🐛 Bug Fixes & Code Audits
+
+| Scope | Description | Status |
+|---|---|---|
+| `timedate` | Fix `integrity.py` using local time for API calls (force UTC). | ✅ Fixed |
+| `data` | Fix `NoneType` error in `merge_healed_data` on full redownload. | ✅ Fixed |
+| `data` | Fix `pd.to_datetime` mixed timezone warnings. | ✅ Fixed |

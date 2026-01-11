@@ -1,6 +1,7 @@
 import asyncio
 import os
 from dataclasses import dataclass
+from datetime import datetime, timezone
 
 import numpy as np
 import pandas as pd
@@ -436,7 +437,8 @@ class AnalystAgent:
                         except: pass
                     
                     # Default to 1000 days ago if full download needed
-                    now = int(pd.Timestamp.now().timestamp() * 1000)
+                    # fix(timedate): explicit UTC
+                    now = int(datetime.now(timezone.utc).timestamp() * 1000)
                     start = now - (1000 * 24 * 60 * 60 * 1000) 
                     return None, [(start, now)]
 
