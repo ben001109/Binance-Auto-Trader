@@ -545,7 +545,15 @@ class CryptoApp(App):
         try:
             set_stop_training(False)
             self.train_loop_active = True
-            await self.action_download_history()
+            
+            # Validate Data Integrity before training (Corrupt -> Redownload, Incremental -> Append)
+            self.log_train(">>> [訓練] 驗證歷史資料完整性...")
+            agent = AnalystAgent(mode='lstm', symbol=symbol, interval=interval)
+            try:
+                await agent.ensure_data_integrity(on_status=lambda msg: self.log_train(f">>> [資料] {msg}"))
+            finally:
+                await agent.client.close_connection() # Ensure client is closed
+    
             total_count = self._history_count("data/history.csv")
             delta = max(total_count - self.trained_rows, 0)
             self.log_train(f">>> [訓練] 已檢測資料 {total_count} 筆 / 已訓練 {self.trained_rows} 筆 / 差異 {delta} 筆")

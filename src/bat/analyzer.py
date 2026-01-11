@@ -408,10 +408,16 @@ class AnalystAgent:
         strategy = self.strategy
         
         if hasattr(strategy, 'training_data_path') and os.path.exists(strategy.training_data_path):
-             # Define the sync blocking function
+            # Define the sync blocking function
             def _check_and_heal_sync():
                 try:
                     df = pd.read_csv(strategy.training_data_path)
+                    
+                    # Basic sanity check (columns)
+                    required_cols = ['timestamp', 'close']
+                    if not all(col in df.columns for col in required_cols):
+                        raise pd.errors.EmptyDataError("Missing columns")
+
                     interval_ms = 15 * 60 * 1000 
                     unit = self.interval[-1]
                     val = int(self.interval[:-1])
@@ -421,9 +427,18 @@ class AnalystAgent:
                     
                     gaps = check_data_gaps(df, interval_ms)
                     return df, gaps
-                except Exception as e:
-                    self.logger.error(f"Integrity check error: {e}")
-                    return None, []
+                except (Exception, pd.errors.ParserError, pd.errors.EmptyDataError) as e:
+                    self.logger.warning(f"Data file corrupted or missing ({e}). Preparing full redownload...")
+                    # If corrupted, delete it
+                    if os.path.exists(strategy.training_data_path):
+                        try:
+                            os.remove(strategy.training_data_path)
+                        except: pass
+                    
+                    # Default to 1000 days ago if full download needed
+                    now = int(pd.Timestamp.now().timestamp() * 1000)
+                    start = now - (1000 * 24 * 60 * 60 * 1000) 
+                    return None, [(start, now)]
 
             # Run read/check in thread
             if on_status: on_status("正在讀取並檢查歷史資料 (可能需要幾秒鐘)...")
