@@ -271,8 +271,9 @@ async def simulate_and_collect(
                     f"投入={decision.invest_amount:.4f} "
                     f"現價={decision.current_price:.4f} 預測={decision.predicted_price:.4f} "
                     f"信心={decision.confidence:.2%} 預期={expected_return:.2%} 實際={actual_return:.2%} "
-                    f"止損={risk.stop_loss:.2%} 止盈={risk.take_profit:.2%} "
-                    f"最大回撤={risk.max_dd_stop:.2%} 分段={risk.position_splits}"
+                    f"信心={decision.confidence:.2%} 預期={expected_return:.2%} 實際={actual_return:.2%} "
+                    f"止損={f'{risk.stop_loss:.2%}' if risk else 'N/A'} 止盈={f'{risk.take_profit:.2%}' if risk else 'N/A'} "
+                    f"最大回撤={f'{risk.max_dd_stop:.2%}' if risk else 'N/A'} 分段={risk.position_splits if risk else 'N/A'}"
                 )
 
             await _sleep_interval(poll_interval or interval)

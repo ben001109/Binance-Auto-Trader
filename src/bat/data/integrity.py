@@ -1,6 +1,6 @@
 import pandas as pd
 import asyncio
-from datetime import datetime
+from datetime import datetime, timezone
 from bat.logger import get_logger
 from bat.config import conf
 from bat.execution.spot_client import async_historical_klines
@@ -39,6 +39,21 @@ def check_data_gaps(df: pd.DataFrame, interval_ms: int) -> list[tuple[int, int]]
         if gap_end >= gap_start:
             gaps.append((gap_start, gap_end))
             
+    # Check for "Tail Gap" (Incremental Update)
+    # If the last timestamp is older than Now - Interval, we need to fetch the latest data.
+    if len(timestamps) > 0:
+        last_ts = timestamps[-1]
+        # fix(timedate): ensure UTC timestamp for comparison
+        now_ts = int(datetime.now(timezone.utc).timestamp() * 1000)
+        
+        # If gap is larger than 2 intervals, consider it missing
+        if now_ts - last_ts > interval_ms * 2:
+            # Start from last_ts + interval
+            tail_gap_start = last_ts + interval_ms
+            # End at now (fetch_klines typically handles the end time correctly)
+            tail_gap_end = now_ts
+            gaps.append((tail_gap_start, tail_gap_end))
+
     return gaps
 
 async def heal_data_gaps(client, symbol: str, interval: str, gaps: list[tuple[int, int]]) -> list[dict]:
@@ -50,8 +65,9 @@ async def heal_data_gaps(client, symbol: str, interval: str, gaps: list[tuple[in
     for start_ms, end_ms in gaps:
         logger.info(f"Healing gap for {symbol} {interval}: {start_ms} to {end_ms}")
         
-        start_str = datetime.fromtimestamp(start_ms/1000).strftime("%Y-%m-%d %H:%M:%S")
-        end_str = datetime.fromtimestamp(end_ms/1000).strftime("%Y-%m-%d %H:%M:%S")
+        # fix(timedate): convert ms to UTC string to avoid local time ambiguity in spot_client
+        start_str = datetime.fromtimestamp(start_ms/1000, tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+        end_str = datetime.fromtimestamp(end_ms/1000, tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
         
         try:
             klines = await async_historical_klines(client, symbol, interval, start_str, end_str)
@@ -80,6 +96,10 @@ def merge_healed_data(original_df: pd.DataFrame, new_klines_list: list) -> pd.Da
     cols = ['open', 'high', 'low', 'close', 'volume']
     new_df[cols] = new_df[cols].astype(float)
     
+    # Handle missing original_df (Full Redownload case)
+    if original_df is None or original_df.empty:
+        return new_df.sort_values('timestamp')
+
     # Unify original_df timestamps
     if not pd.api.types.is_datetime64_any_dtype(original_df['timestamp']):
         try:

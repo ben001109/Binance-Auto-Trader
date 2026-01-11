@@ -268,7 +268,7 @@ class CryptoApp(App):
         self.log_msg(f"目前交易對: [bold cyan]{conf.SYMBOL}[/]")
         self.log_msg(f"API 模式: {'[green]Testnet[/]' if conf.IS_TESTNET else '[bold red]REAL[/]'}")
         self._update_user_info({})
-        self.run_worker(self.action_init_fetch(), exclusive=False)
+        # self.run_worker(self.action_init_fetch(), exclusive=False) # Removed to prevent double run (Select trigger)
         self.run_worker(self.action_load_symbols(), exclusive=False)
         self._show_tab("trade")
         self.set_interval(1.0, self._poll_sell_price)
@@ -406,6 +406,8 @@ class CryptoApp(App):
                 self.background_training_task.cancel()
             if self.model_watch_task and not self.model_watch_task.done():
                 self.model_watch_task.cancel()
+            if hasattr(self, "integrity_task") and self.integrity_task and not self.integrity_task.done():
+                self.integrity_task.cancel()
 
     async def on_shutdown(self) -> None:
         set_stop_training(True)
@@ -545,7 +547,28 @@ class CryptoApp(App):
         try:
             set_stop_training(False)
             self.train_loop_active = True
-            await self.action_download_history()
+            
+            # Validate Data Integrity before training (Corrupt -> Redownload, Incremental -> Append)
+            self.log_train(">>> [訓練] 驗證歷史資料完整性...")
+            agent = AnalystAgent(mode='lstm', symbol=symbol, interval=interval)
+            
+            # fix(logic): make integrity check cancellable
+            self.integrity_task = asyncio.create_task(
+                agent.ensure_data_integrity(on_status=lambda msg: self.log_train(f">>> [資料] {msg}"))
+            )
+            try:
+                await self.integrity_task
+            except asyncio.CancelledError:
+                self.log_train("[bold yellow]⚠️ 資料完整性檢查已取消[/]")
+                raise
+            finally:
+                self.integrity_task = None
+                # fix(logic): safe client closure
+                if hasattr(agent.client, "close_connection"):
+                    await asyncio.to_thread(agent.client.close_connection)
+                elif hasattr(agent.client, "close"):
+                     await asyncio.to_thread(agent.client.close)
+    
             total_count = self._history_count("data/history.csv")
             delta = max(total_count - self.trained_rows, 0)
             self.log_train(f">>> [訓練] 已檢測資料 {total_count} 筆 / 已訓練 {self.trained_rows} 筆 / 差異 {delta} 筆")
@@ -821,7 +844,10 @@ class CryptoApp(App):
             # Data Integrity Check
             self.log_msg("[系統] 正在檢查歷史資料完整性...")
             agent = AnalystAgent(client=broker.client, mode='lstm', symbol=symbol, interval=interval)
-            await agent.ensure_data_integrity()
+            
+            # Use on_status callback to show progress in UI
+            await agent.ensure_data_integrity(on_status=lambda msg: self.log_msg(f"[檢查] {msg}"))
+            
             self.log_msg("[系統] 資料完整性檢查完成")
 
             klines = await broker.get_klines(symbol=symbol, interval=interval, limit=2)

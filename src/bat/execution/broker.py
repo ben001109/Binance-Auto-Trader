@@ -24,11 +24,18 @@ class BinanceBroker:
 
     async def init_client(self):
         """初始化連線"""
-        if not self.client:
+        # fix(logic): prevent race condition during concurrent init
+        if self.client or getattr(self, "_initializing", False):
+            return
+        
+        self._initializing = True
+        try:
             self.client = create_spot_client(is_testnet=self.is_testnet)
             self.wallet_client = create_wallet_client(is_testnet=self.is_testnet)
             print(f">>> Broker 初始化完成 (Testnet={self.is_testnet})")
             self.logger.info("Broker initialized (Testnet=%s)", self.is_testnet)
+        finally:
+            self._initializing = False
 
     async def get_balance(self, asset='USDT'):
         """查詢餘額"""
@@ -140,6 +147,9 @@ class BinanceBroker:
 
     async def close(self):
         if self.client:
+            # fix(logic): close client session to prevent resource leaks
+            if hasattr(self.client, "close_connection"):
+                self.client.close_connection()
             self.client = None
 
     async def _load_symbol_info(self):
