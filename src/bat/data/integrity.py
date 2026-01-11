@@ -94,6 +94,10 @@ def merge_healed_data(original_df: pd.DataFrame, new_klines_list: list) -> pd.Da
     cols = ['open', 'high', 'low', 'close', 'volume']
     new_df[cols] = new_df[cols].astype(float)
     
+    # Handle missing original_df (Full Redownload case)
+    if original_df is None or original_df.empty:
+        return new_df.sort_values('timestamp')
+
     # Unify original_df timestamps
     if not pd.api.types.is_datetime64_any_dtype(original_df['timestamp']):
         try:
