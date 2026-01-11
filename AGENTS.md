@@ -169,6 +169,8 @@ PM -> User: "任務完成。"
 | `data` | Fix `NoneType` error in `merge_healed_data` on full redownload. | ✅ Fixed |
 | `data` | Fix `pd.to_datetime` mixed timezone warnings. | ✅ Fixed |
 | `tui` | Fix Stop button ignoring data download/check tasks. | ✅ Fixed |
+| `data` | Fix Crash: `MinMaxScaler` fitting on empty data (0 samples). | ✅ Fixed |
+| `sim` | Fix Crash: `NoneType` attribute error when analysis fails. | ✅ Fixed |
 | `broker` | Fix Resource Leak: Client session not closed in `close()`. | ✅ Fixed |
 | `broker` | Fix Race Condition: Concurrent `init_client` calls. | ✅ Fixed |
 | `training` | Fix Error Handling: Wrap `on_epoch_loss` callback. | ✅ Fixed |

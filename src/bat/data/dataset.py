@@ -145,6 +145,11 @@ class DataProcessor:
             np.where(target_ret < -threshold, 0, 1),
         )
 
+        # fix(error): prevent fit on empty data
+        if len(data) == 0:
+            # Return empty structure or raise specific error caught by analyzer
+            raise ValueError("Insufficient data for training after processing (0 samples)")
+
         self.scaler.fit(data)
         data_scaled = self.scaler.transform(data)
         return data_scaled, target_class.astype(np.int64), df, target_ret
