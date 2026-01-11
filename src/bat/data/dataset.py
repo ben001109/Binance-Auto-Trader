@@ -61,7 +61,8 @@ class DataProcessor:
         if not is_dt:
              try:
                  # Try numeric ms first (most common in this app)
-                 df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+                 # fix(logic): explicit UTC to match integrity check
+                 df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms', utc=True)
              except Exception:
                  try:
                      # Fallback to auto-parse (for strings)

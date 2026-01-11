@@ -610,9 +610,16 @@ def train_model(
             logger.debug("Epoch %s avg loss=%.8f", epoch + 1, avg_loss)
         logger.info("Epoch %s/%s avg loss=%.8f", epoch + 1, epochs, avg_loss)
         if on_log:
-            on_log(f">>> [訓練] Epoch {epoch + 1}/{epochs} loss={avg_loss:.6f}")
+            try:
+                on_log(f">>> [訓練] Epoch {epoch + 1}/{epochs} loss={avg_loss:.6f}")
+            except Exception: pass
+            
         if on_epoch_loss:
-            on_epoch_loss(avg_loss)
+            # fix(error): prevent callback failure from crashing training
+            try:
+                on_epoch_loss(avg_loss)
+            except Exception:
+                logger.error("Callback on_epoch_loss failed")
             
         # Save checkpoint every epoch for safety
         try:
