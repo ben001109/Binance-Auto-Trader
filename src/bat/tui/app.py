@@ -268,7 +268,7 @@ class CryptoApp(App):
         self.log_msg(f"目前交易對: [bold cyan]{conf.SYMBOL}[/]")
         self.log_msg(f"API 模式: {'[green]Testnet[/]' if conf.IS_TESTNET else '[bold red]REAL[/]'}")
         self._update_user_info({})
-        self.run_worker(self.action_init_fetch(), exclusive=False)
+        # self.run_worker(self.action_init_fetch(), exclusive=False) # Removed to prevent double run (Select trigger)
         self.run_worker(self.action_load_symbols(), exclusive=False)
         self._show_tab("trade")
         self.set_interval(1.0, self._poll_sell_price)
