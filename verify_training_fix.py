@@ -23,14 +23,19 @@ def setup_env():
          mock_conf.FEATURE_COLS = ["close", "volume"] 
          mock_conf.SEQ_LENGTH = 10
 
-def create_mock_data(rows=100, start_ts=1000000):
+def create_mock_data(rows=2000, start_ts=1000000):
+    import random
+    prices = [100.0]
+    for _ in range(rows - 1):
+        prices.append(prices[-1] * (1.0 + random.uniform(-0.01, 0.01)))
+        
     data = {
         "timestamp": [start_ts + i * 60000 for i in range(rows)],
-        "open": [100.0] * rows,
-        "high": [105.0] * rows,
-        "low": [95.0] * rows,
-        "close": [100.0] * rows,
-        "volume": [1000.0] * rows,
+        "open": prices,
+        "high": [p * 1.01 for p in prices],
+        "low": [p * 0.99 for p in prices],
+        "close": prices,
+        "volume": [1000.0 + random.uniform(-100, 100) for _ in range(rows)],
         "trans_count": [10] * rows
     }
     df = pd.DataFrame(data)
@@ -42,7 +47,7 @@ def test_incremental_training():
     setup_env()
     
     # 1. Create initial data
-    df1 = create_mock_data(rows=100, start_ts=1000000)
+    df1 = create_mock_data(rows=2000, start_ts=1000000)
     max_ts_1 = int(df1["timestamp"].max())
     
     # 2. Train Phase 1 (2 epochs)
@@ -62,6 +67,13 @@ def test_incremental_training():
         mock_conf.FEATURE_COLS = ["open", "high", "low", "close", "volume"]
         mock_conf.SEQ_LENGTH = 5
         mock_conf.LR = 0.001
+        mock_conf.BATCH_SIZE = 32
+        mock_conf.DROPOUT = 0.2
+        mock_conf.HIDDEN_SIZE = 64
+        mock_conf.NUM_LAYERS = 1
+        mock_conf.DEVICE = torch.device("cpu")
+        mock_conf.RETURN_THRESHOLD = 0.001
+        mock_conf.RETURN_HORIZON = 3
         
         # Run training
         model, processor, _, last_ts = train_model(
@@ -82,7 +94,7 @@ def test_incremental_training():
 
     # 3. Add new data
     print("Phase 2: Adding new data...")
-    df2 = create_mock_data(rows=200, start_ts=1000000) # 100 more rows
+    df2 = create_mock_data(rows=2200, start_ts=1000000) # 200 more rows
     max_ts_2 = int(df2["timestamp"].max())
     
     # 4. Train Phase 2 (2 more epochs)
@@ -92,6 +104,13 @@ def test_incremental_training():
         mock_conf.FEATURE_COLS = ["open", "high", "low", "close", "volume"]
         mock_conf.SEQ_LENGTH = 5
         mock_conf.LR = 0.001
+        mock_conf.BATCH_SIZE = 32
+        mock_conf.DROPOUT = 0.2
+        mock_conf.HIDDEN_SIZE = 64
+        mock_conf.NUM_LAYERS = 1
+        mock_conf.DEVICE = torch.device("cpu")
+        mock_conf.RETURN_THRESHOLD = 0.001
+        mock_conf.RETURN_HORIZON = 3
         
         # This should load checkpoint (epoch 2) and train 2 MORE epochs -> 4
         model, processor, _, last_ts_2 = train_model(

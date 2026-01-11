@@ -707,7 +707,6 @@ class CryptoApp(App):
             self.training_active = False
             set_stop_training(False)
             if self.pending_training and not should_stop_training():
-            if self.pending_training and not should_stop_training():
                 latest_ts = self._get_latest_timestamp("data/history.csv")
                 if latest_ts > self.last_trained_ts:
                     self.pending_training = False

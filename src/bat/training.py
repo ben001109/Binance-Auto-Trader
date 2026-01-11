@@ -269,6 +269,26 @@ def train_model(
             )
 
     df = df if df is not None else _load_training_data(data_path)
+    
+    # Identify last available timestamp BEFORE processing (which drops tail rows)
+    last_trained_timestamp = 0
+    if "timestamp" in df.columns:
+        # Check if it's already datetime (if passed in as df)
+        if pd.api.types.is_datetime64_any_dtype(df["timestamp"]):
+            # If it's already datetime, convert to ms
+            val = df["timestamp"].max()
+            if pd.notnull(val):
+                last_trained_timestamp = int(val.value // 1_000_000)
+        else:
+             # Assume int ms
+             val = df["timestamp"].max()
+             if pd.notnull(val):
+                 last_trained_timestamp = int(val)
+    elif "close_time" in df.columns:
+         val = df["close_time"].max()
+         if pd.notnull(val):
+             last_trained_timestamp = int(val)
+             
     processor = DataProcessor()
 
     data_scaled, target_scaled, df, target_ret = processor.process_for_training(df, conf.FEATURE_COLS)
@@ -418,13 +438,6 @@ def train_model(
         conf.DROPOUT,
         conf.LR,
     )
-
-    # Identify last trained timestamp
-    last_trained_timestamp = 0
-    if "timestamp" in df.columns:
-        last_trained_timestamp = int(df["timestamp"].max())
-    elif "close_time" in df.columns:
-        last_trained_timestamp = int(df["close_time"].max())
 
     logger.debug("Last trained timestamp identified: %s", last_trained_timestamp)
 
