@@ -61,7 +61,8 @@ class DataProcessor:
         if not is_dt:
              try:
                  # Try numeric ms first (most common in this app)
-                 df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+                 # fix(logic): explicit UTC to match integrity check
+                 df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms', utc=True)
              except Exception:
                  try:
                      # Fallback to auto-parse (for strings)
@@ -143,6 +144,11 @@ class DataProcessor:
             2,
             np.where(target_ret < -threshold, 0, 1),
         )
+
+        # fix(error): prevent fit on empty data
+        if len(data) == 0:
+            # Return empty structure or raise specific error caught by analyzer
+            raise ValueError("Insufficient data for training after processing (0 samples)")
 
         self.scaler.fit(data)
         data_scaled = self.scaler.transform(data)

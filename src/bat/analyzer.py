@@ -1,6 +1,7 @@
 import asyncio
 import os
 from dataclasses import dataclass
+from datetime import datetime, timezone
 
 import numpy as np
 import pandas as pd
@@ -298,13 +299,20 @@ class LSTMStrategy(BaseStrategy):
             self.processor = DataProcessor()
             # Try fit processor on training data for better scaling, else use market data
             try:
-                if self.train_df is None:
-                    self.train_df = _load_training_data(self.training_data_path)
-                self.processor.process_for_training(self.train_df, conf.FEATURE_COLS)
-            except Exception:
-                self.logger.warning("Training data unavailable (or load failed), fitting processor on market data only")
-                self.train_df = market_df
-                self.processor.process_for_training(self.train_df, conf.FEATURE_COLS)
+                try:
+                    if self.train_df is None:
+                        self.train_df = _load_training_data(self.training_data_path)
+                    self.processor.process_for_training(self.train_df, conf.FEATURE_COLS)
+                except Exception:
+                    self.logger.warning("Training data unavailable (or load failed), fitting processor on market data only")
+                    # Use a copy to avoid modifying the original market_df used for inference
+                    self.train_df = market_df.copy()
+                    self.processor.process_for_training(self.train_df, conf.FEATURE_COLS)
+            except Exception as e:
+                self.logger.warning(f"Failed to fit data processor ({e}), using fallback")
+                # Reset processor so we retry next time if more data becomes available
+                self.processor = None
+                return self._fallback_decision(market_df)
 
         try:
             probs = self._predict_probs(model, self.processor, market_df)
@@ -393,41 +401,84 @@ class AnalystAgent:
              # Return error decision
              return TradeDecision("HOLD", 0.0, 0.0, 0.0, 0.0, "error", "HOLD"), None
 
-    async def ensure_data_integrity(self):
+    async def ensure_data_integrity(self, on_status=None):
         """
         Check and heal gaps in historical data.
+        Runs blocking I/O in a separate thread.
         """
         if self.mode != 'lstm':
             return
             
-        self.logger.info("Checking data integrity...")
+        msg = "Checking data integrity..."
+        self.logger.info(msg)
+        if on_status: on_status(msg)
+
         strategy = self.strategy
+        
         if hasattr(strategy, 'training_data_path') and os.path.exists(strategy.training_data_path):
-             # Load existing history
-             try:
-                 df = pd.read_csv(strategy.training_data_path)
-                 interval_ms = 15 * 60 * 1000 # Default to 15m for now, or parse self.interval
-                 # Parse interval to ms
-                 unit = self.interval[-1]
-                 val = int(self.interval[:-1])
-                 if unit == 'm': interval_ms = val * 60 * 1000
-                 elif unit == 'h': interval_ms = val * 60 * 60 * 1000
-                 elif unit == 'd': interval_ms = val * 24 * 60 * 60 * 1000
-                 
-                 gaps = check_data_gaps(df, interval_ms)
-                 if gaps:
-                     self.logger.warning(f"Found {len(gaps)} data gaps. Healing...")
-                     new_chunks = await heal_data_gaps(self.client, self.symbol, self.interval, gaps)
-                     if new_chunks:
-                         df_healed = merge_healed_data(df, new_chunks)
-                         df_healed.to_csv(strategy.training_data_path, index=False)
-                         self.logger.info(f"Healed data saved to {strategy.training_data_path}")
-                     else:
-                         self.logger.warning("No data found to heal gaps.")
-                 else:
-                     self.logger.info("Data Integrity Check Passed: No gaps found.")
-             except Exception as e:
-                 self.logger.error(f"Data integrity check failed: {e}")
+            # Define the sync blocking function
+            def _check_and_heal_sync():
+                try:
+                    df = pd.read_csv(strategy.training_data_path)
+                    
+                    # Basic sanity check (columns)
+                    required_cols = ['timestamp', 'close']
+                    if not all(col in df.columns for col in required_cols):
+                        raise pd.errors.EmptyDataError("Missing columns")
+
+                    interval_ms = 15 * 60 * 1000 
+                    unit = self.interval[-1]
+                    val = int(self.interval[:-1])
+                    if unit == 'm': interval_ms = val * 60 * 1000
+                    elif unit == 'h': interval_ms = val * 60 * 60 * 1000
+                    elif unit == 'd': interval_ms = val * 24 * 60 * 60 * 1000
+                    
+                    gaps = check_data_gaps(df, interval_ms)
+                    return df, gaps
+                except (Exception, pd.errors.ParserError, pd.errors.EmptyDataError) as e:
+                    self.logger.warning(f"Data file corrupted or missing ({e}). Preparing full redownload...")
+                    # If corrupted, delete it
+                    if os.path.exists(strategy.training_data_path):
+                        try:
+                            os.remove(strategy.training_data_path)
+                        except: pass
+                    
+                    # Default to 1000 days ago if full download needed
+                    # fix(timedate): explicit UTC
+                    now = int(datetime.now(timezone.utc).timestamp() * 1000)
+                    start = now - (1000 * 24 * 60 * 60 * 1000) 
+                    return None, [(start, now)]
+
+            # Run read/check in thread
+            if on_status: on_status("正在讀取並檢查歷史資料 (可能需要幾秒鐘)...")
+            df, gaps = await asyncio.to_thread(_check_and_heal_sync)
+            
+            if gaps:
+                msg = f"發現 {len(gaps)} 個資料缺口，正在修補..."
+                self.logger.warning(msg)
+                if on_status: on_status(msg)
+
+                # Healing is async IO, can run on main loop
+                new_chunks = await heal_data_gaps(self.client, self.symbol, self.interval, gaps)
+                
+                if new_chunks:
+                    msg = f"下載了 {len(new_chunks)} 筆新資料，正在寫入..."
+                    if on_status: on_status(msg)
+
+                    # merging and saving is blocking again
+                    def _save_healed():
+                        df_healed = merge_healed_data(df, new_chunks)
+                        df_healed.to_csv(strategy.training_data_path, index=False)
+                    
+                    await asyncio.to_thread(_save_healed)
+                    self.logger.info(f"Healed data saved to {strategy.training_data_path}")
+                    if on_status: on_status("資料修補完成並已存檔。")
+                else:
+                    self.logger.warning("No data found to heal gaps.")
+                    if on_status: on_status("警告: 無法下載缺口資料。")
+            else:
+                self.logger.info("Data Integrity Check Passed: No gaps found.")
+                if on_status: on_status("資料完整性檢查通過。")
 
 # ==========================================
 # Legacy Helper (for Backwards Compatibility if needed)

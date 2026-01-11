@@ -87,17 +87,30 @@ def _log_return_alignment(
 ) -> None:
     if len(data_scaled) <= conf.SEQ_LENGTH:
         return
-    sequences = _create_sequences(data_scaled, conf.SEQ_LENGTH)
-    if len(sequences) == 0:
+    total_sequences = len(data_scaled) - conf.SEQ_LENGTH
+    if total_sequences <= 0:
         return
-    actual_returns = df["TARGET_RET"].values[conf.SEQ_LENGTH - 1 :]
-    actual_returns = actual_returns[: len(sequences)]
-    if len(actual_returns) == 0:
-        return
-    if len(sequences) > max_samples:
-        idx = np.linspace(0, len(sequences) - 1, max_samples).astype(int)
-        sequences = sequences[idx]
-        actual_returns = actual_returns[idx]
+
+    # Sample indices FIRST to avoid OOM
+    if total_sequences > max_samples:
+        indices = np.linspace(0, total_sequences - 1, max_samples).astype(int)
+    else:
+        indices = np.arange(total_sequences)
+
+    sequences = []
+    actual_returns = []
+    
+    # Only create sequences for sampled indices
+    target_values = df["TARGET_RET"].values
+    for idx in indices:
+        sequences.append(data_scaled[idx : idx + conf.SEQ_LENGTH])
+        # target return is at idx + seq_length - 1 (since sequence ends at idx+seq_length)
+        # Actually in original code: df["TARGET_RET"].values[conf.SEQ_LENGTH - 1 :]
+        # So alignment: sequence starting at i (ending at i+seq_len) corresponds to target at i+seq_len-1
+        actual_returns.append(target_values[idx + conf.SEQ_LENGTH - 1])
+
+    sequences = np.array(sequences)
+    actual_returns = np.array(actual_returns)
     preds = []
     batch_size = 256
     model.eval()
@@ -170,7 +183,20 @@ def suggest_risk_params_from_model(
         logger.warning("Fallback risk params: insufficient data for model distribution")
         return RiskParams(stop_loss=0.02, take_profit=0.05, max_dd_stop=0.2, position_splits=3)
 
-    sequences = _create_sequences(data_scaled, conf.SEQ_LENGTH)
+    # Optimized sampling to prevent OOM
+    total_sequences = len(data_scaled) - conf.SEQ_LENGTH
+    max_risk_samples = 50000  # Cap samples for risk estimation
+    
+    if total_sequences > max_risk_samples:
+         # Use linspace for uniform coverage of history
+         indices = np.linspace(0, total_sequences - 1, max_risk_samples).astype(int)
+    else:
+         indices = np.arange(total_sequences)
+
+    sequences = []
+    for i in indices:
+        sequences.append(data_scaled[i : i + conf.SEQ_LENGTH])
+    sequences = np.array(sequences)
 
     model.eval()
     expected_returns = []
@@ -584,9 +610,18 @@ def train_model(
             logger.debug("Epoch %s avg loss=%.8f", epoch + 1, avg_loss)
         logger.info("Epoch %s/%s avg loss=%.8f", epoch + 1, epochs, avg_loss)
         if on_log:
-            on_log(f">>> [訓練] Epoch {epoch + 1}/{epochs} loss={avg_loss:.6f}")
+            try:
+                on_log(f">>> [訓練] Epoch {epoch + 1}/{epochs} loss={avg_loss:.6f}")
+            except Exception: pass
+            
         if on_epoch_loss:
-            on_epoch_loss(avg_loss)
+            # fix(error): prevent callback failure from crashing training
+            try:
+                on_epoch_loss(avg_loss)
+            except Exception:
+                logger.error("Callback on_epoch_loss failed")
+            
+        # Save checkpoint every epoch for safety
         try:
             os.makedirs(os.path.dirname(_checkpoint_path), exist_ok=True)
             torch.save(
@@ -594,10 +629,12 @@ def train_model(
                     "epoch": epoch + 1,
                     "model_state": model.state_dict(),
                     "optimizer_state": optimizer.state_dict(),
-                    "meta": {"input_dim": len(conf.FEATURE_COLS), "output_dim": 3},
+                    "meta": {"input_dim": len(conf.FEATURE_COLS), "output_dim": 3, "loss": avg_loss},
                 },
                 _checkpoint_path,
             )
+            # Optional: Also update the main model path if it's the best loss? 
+            # For now, checkpoint is enough to resume.
         except Exception:
             logger.exception("Failed to save training checkpoint")
 
