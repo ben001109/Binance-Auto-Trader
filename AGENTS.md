@@ -106,7 +106,7 @@ graph TD
 ### 4. **Branching Strategy**
 - **clean-repo**: 穩定的生產分支 (Production)。**只接受 PR 合併，禁止直接 Push。**
 - **feat/** 或 **fix/**: 開發分支。完成後發 PR 到 `clean-repo`。**所有工作請務必要開PR，然後commit** **使用完PR之後，請刪除本地PR以利後續管理**
-- **實驗性分支**: 命名為 `exp/<feature>`，可不遵守上述嚴格版本規則，但在合併回 `clean-repo` 前必須標準化。**可以使用nightly branch發版本更新**
+- **實驗性分支**: 命名為 `exp/<feature>`，可不遵守上述嚴格版本規則，但在合併回 `clean-repo` 前必須標準化。**可以使用 nightly 分支發布版本更新**
 
 ### 1. Product Manager (PM)
 - **目標**: 需求轉規格
