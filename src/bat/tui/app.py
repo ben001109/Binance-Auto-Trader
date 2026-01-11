@@ -552,7 +552,11 @@ class CryptoApp(App):
             try:
                 await agent.ensure_data_integrity(on_status=lambda msg: self.log_train(f">>> [資料] {msg}"))
             finally:
-                await agent.client.close_connection() # Ensure client is closed
+                # fix(logic): safe client closure
+                if hasattr(agent.client, "close_connection"):
+                    await asyncio.to_thread(agent.client.close_connection)
+                elif hasattr(agent.client, "close"):
+                     await asyncio.to_thread(agent.client.close)
     
             total_count = self._history_count("data/history.csv")
             delta = max(total_count - self.trained_rows, 0)
