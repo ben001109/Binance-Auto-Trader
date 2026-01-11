@@ -396,38 +396,52 @@ class AnalystAgent:
     async def ensure_data_integrity(self):
         """
         Check and heal gaps in historical data.
+        Runs blocking I/O in a separate thread.
         """
         if self.mode != 'lstm':
             return
             
         self.logger.info("Checking data integrity...")
         strategy = self.strategy
+        
         if hasattr(strategy, 'training_data_path') and os.path.exists(strategy.training_data_path):
-             # Load existing history
-             try:
-                 df = pd.read_csv(strategy.training_data_path)
-                 interval_ms = 15 * 60 * 1000 # Default to 15m for now, or parse self.interval
-                 # Parse interval to ms
-                 unit = self.interval[-1]
-                 val = int(self.interval[:-1])
-                 if unit == 'm': interval_ms = val * 60 * 1000
-                 elif unit == 'h': interval_ms = val * 60 * 60 * 1000
-                 elif unit == 'd': interval_ms = val * 24 * 60 * 60 * 1000
-                 
-                 gaps = check_data_gaps(df, interval_ms)
-                 if gaps:
-                     self.logger.warning(f"Found {len(gaps)} data gaps. Healing...")
-                     new_chunks = await heal_data_gaps(self.client, self.symbol, self.interval, gaps)
-                     if new_chunks:
-                         df_healed = merge_healed_data(df, new_chunks)
-                         df_healed.to_csv(strategy.training_data_path, index=False)
-                         self.logger.info(f"Healed data saved to {strategy.training_data_path}")
-                     else:
-                         self.logger.warning("No data found to heal gaps.")
-                 else:
-                     self.logger.info("Data Integrity Check Passed: No gaps found.")
-             except Exception as e:
-                 self.logger.error(f"Data integrity check failed: {e}")
+             # Define the sync blocking function
+            def _check_and_heal_sync():
+                try:
+                    df = pd.read_csv(strategy.training_data_path)
+                    interval_ms = 15 * 60 * 1000 
+                    unit = self.interval[-1]
+                    val = int(self.interval[:-1])
+                    if unit == 'm': interval_ms = val * 60 * 1000
+                    elif unit == 'h': interval_ms = val * 60 * 60 * 1000
+                    elif unit == 'd': interval_ms = val * 24 * 60 * 60 * 1000
+                    
+                    gaps = check_data_gaps(df, interval_ms)
+                    return df, gaps
+                except Exception as e:
+                    self.logger.error(f"Integrity check error: {e}")
+                    return None, []
+
+            # Run read/check in thread
+            df, gaps = await asyncio.to_thread(_check_and_heal_sync)
+            
+            if gaps:
+                self.logger.warning(f"Found {len(gaps)} data gaps. Healing...")
+                # Healing is async IO, can run on main loop
+                new_chunks = await heal_data_gaps(self.client, self.symbol, self.interval, gaps)
+                
+                if new_chunks:
+                    # merging and saving is blocking again
+                    def _save_healed():
+                        df_healed = merge_healed_data(df, new_chunks)
+                        df_healed.to_csv(strategy.training_data_path, index=False)
+                    
+                    await asyncio.to_thread(_save_healed)
+                    self.logger.info(f"Healed data saved to {strategy.training_data_path}")
+                else:
+                    self.logger.warning("No data found to heal gaps.")
+            else:
+                self.logger.info("Data Integrity Check Passed: No gaps found.")
 
 # ==========================================
 # Legacy Helper (for Backwards Compatibility if needed)
