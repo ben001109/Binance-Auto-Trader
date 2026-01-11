@@ -39,6 +39,20 @@ def check_data_gaps(df: pd.DataFrame, interval_ms: int) -> list[tuple[int, int]]
         if gap_end >= gap_start:
             gaps.append((gap_start, gap_end))
             
+    # Check for "Tail Gap" (Incremental Update)
+    # If the last timestamp is older than Now - Interval, we need to fetch the latest data.
+    if len(timestamps) > 0:
+        last_ts = timestamps[-1]
+        now_ts = int(datetime.now().timestamp() * 1000)
+        
+        # If gap is larger than 2 intervals, consider it missing
+        if now_ts - last_ts > interval_ms * 2:
+            # Start from last_ts + interval
+            tail_gap_start = last_ts + interval_ms
+            # End at now (fetch_klines typically handles the end time correctly)
+            tail_gap_end = now_ts
+            gaps.append((tail_gap_start, tail_gap_end))
+
     return gaps
 
 async def heal_data_gaps(client, symbol: str, interval: str, gaps: list[tuple[int, int]]) -> list[dict]:
