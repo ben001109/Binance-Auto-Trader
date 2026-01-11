@@ -613,6 +613,8 @@ def train_model(
             on_log(f">>> [訓練] Epoch {epoch + 1}/{epochs} loss={avg_loss:.6f}")
         if on_epoch_loss:
             on_epoch_loss(avg_loss)
+            
+        # Save checkpoint every epoch for safety
         try:
             os.makedirs(os.path.dirname(_checkpoint_path), exist_ok=True)
             torch.save(
@@ -620,10 +622,12 @@ def train_model(
                     "epoch": epoch + 1,
                     "model_state": model.state_dict(),
                     "optimizer_state": optimizer.state_dict(),
-                    "meta": {"input_dim": len(conf.FEATURE_COLS), "output_dim": 3},
+                    "meta": {"input_dim": len(conf.FEATURE_COLS), "output_dim": 3, "loss": avg_loss},
                 },
                 _checkpoint_path,
             )
+            # Optional: Also update the main model path if it's the best loss? 
+            # For now, checkpoint is enough to resume.
         except Exception:
             logger.exception("Failed to save training checkpoint")
 
