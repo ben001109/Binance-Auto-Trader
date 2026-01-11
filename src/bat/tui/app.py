@@ -260,7 +260,7 @@ class CryptoApp(App):
         self.train_loop_active = False
         self.last_time_sync = 0.0
         self.pretrain_done = False
-        self.trained_rows = self._load_trained_rows()
+        self.last_trained_ts = self._load_last_trained_ts()
         self.simulation_future = None
         self.train_collect_future = None
         self.pending_training = False
@@ -431,18 +431,26 @@ class CryptoApp(App):
             return
         try:
             set_stop_training(False)
-            total_count = self._history_count("data/history.csv")
-            delta = max(total_count - self.trained_rows, 0)
-            self.log_train(
-                f">>> [模擬] 已檢測資料 {total_count} 筆 / 已訓練 {self.trained_rows} 筆 / 差異 {delta} 筆"
-            )
-            if delta > 0 and total_count >= conf.SEQ_LENGTH:
+            current_latest_ts = self._get_latest_timestamp("data/history.csv")
+            
+            # Show diff if we have new data
+            if current_latest_ts > self.last_trained_ts:
+                diff_seconds = (current_latest_ts - self.last_trained_ts) / 1000
+                self.log_train(
+                    f">>> [模擬] 新資料: {diff_seconds:.0f} 秒 (Since {self.last_trained_ts})"
+                )
+            else:
+                 self.log_train(f">>> [模擬] 目前無新資料 (Latest: {current_latest_ts})")
+
+            # Check trigger condition
+            if current_latest_ts > self.last_trained_ts and self._history_count("data/history.csv") >= conf.SEQ_LENGTH:
                 if self.background_training_task and not self.background_training_task.done():
                     self.pending_training = True
                     self.log_train("[bold yellow]⚠️ 背景訓練仍在執行，已排隊下一輪訓練[/]")
                 else:
-                    self.log_train(f">>> [模擬] 觸發訓練 (差異 {delta} 筆)...")
+                    self.log_train(f">>> [模擬] 觸發訓練 (New Data)...")
                     self.background_training_task = asyncio.create_task(self._run_training_cycle())
+            
             self.simulation_future = asyncio.to_thread(
                 self._simulate_collect_sync,
                 symbol,
@@ -456,16 +464,17 @@ class CryptoApp(App):
                 "simulate",
             )
             count = await self.simulation_future
-            total_count = self._history_count("data/history.csv")
-            delta = max(total_count - self.trained_rows, 0)
-            self.log_train(f">>> [模擬] 完成後差異 {delta} 筆")
-            if delta > 0 and total_count >= conf.SEQ_LENGTH:
+            
+            # Post-simulation check
+            current_latest_ts = self._get_latest_timestamp("data/history.csv")
+            if current_latest_ts > self.last_trained_ts and self._history_count("data/history.csv") >= conf.SEQ_LENGTH:
                 if self.background_training_task and not self.background_training_task.done():
                     self.pending_training = True
                     self.log_train("[bold yellow]⚠️ 背景訓練仍在執行，已排隊下一輪訓練[/]")
                 else:
-                    self.log_train(f">>> [模擬] 觸發訓練 (差異 {delta} 筆)...")
+                    self.log_train(f">>> [模擬] 觸發訓練 (New Data)...")
                     self.background_training_task = asyncio.create_task(self._run_training_cycle())
+                    
             self.log_train(f"[bold green]✅ 模擬完成！共 {count} 筆[/]")
         except Exception as e:
             self.log_train_error(f"[bold red]❌ 模擬失敗: {e}[/]", e)
@@ -569,18 +578,20 @@ class CryptoApp(App):
                 elif hasattr(agent.client, "close"):
                      await asyncio.to_thread(agent.client.close)
     
-            total_count = self._history_count("data/history.csv")
-            delta = max(total_count - self.trained_rows, 0)
-            self.log_train(f">>> [訓練] 已檢測資料 {total_count} 筆 / 已訓練 {self.trained_rows} 筆 / 差異 {delta} 筆")
+            current_latest_ts = self._get_latest_timestamp("data/history.csv")
+            
+            # Initial Check
+            self.log_train(f">>> [訓練] 最新資料時間戳: {current_latest_ts} / 模型上次訓練截至: {self.last_trained_ts}")
+            
             if not self.pretrain_done:
-                if total_count >= conf.SEQ_LENGTH and delta > 0:
-                    self.log_train(f">>> [訓練] 先使用既有資料訓練 ({total_count} 筆)...")
+                count = self._history_count("data/history.csv")
+                if count >= conf.SEQ_LENGTH and current_latest_ts > self.last_trained_ts:
+                    self.log_train(f">>> [訓練] 發現新資料 (New since {self.last_trained_ts})...")
                     await self._run_training_cycle()
                     self.pretrain_done = True
-                    self.trained_rows = total_count
-                    self._save_trained_rows(self.trained_rows)
                     if should_stop_training():
                         return
+
             while self.train_loop_active:
                 symbol, interval, poll_interval, sim_steps, _ = self._read_inputs()
                 await self._maybe_sync_time()
@@ -590,7 +601,7 @@ class CryptoApp(App):
                     self.log_train(f"[bold yellow]⚠️ 模擬步數已提升為 {sim_steps}[/]")
                 self._save_settings()
                 self.log_train(f">>> [訓練] 新一輪收集開始 (目標 {sim_steps} 筆)...")
-                before_count = self._history_count("data/history.csv")
+                
                 self.train_collect_future = asyncio.to_thread(
                     self._simulate_collect_sync,
                     symbol,
@@ -607,27 +618,32 @@ class CryptoApp(App):
                 if should_stop_training():
                     break
                 await self._maybe_sync_time()
+                
+                current_latest_ts = self._get_latest_timestamp("data/history.csv")
                 total_count = self._history_count("data/history.csv")
-                new_rows = max(total_count - before_count, 0)
-                self.log_train(f">>> [訓練] 本輪新增資料 {new_rows} 筆")
-                delta = max(total_count - self.trained_rows, 0)
-                self.log_train(f">>> [訓練] 累積差異 {delta} 筆")
+                
+                new_data_available = current_latest_ts > self.last_trained_ts
+                self.log_train(f">>> [訓練] 檢查新資料: {new_data_available} (Diff {current_latest_ts - self.last_trained_ts}ms)")
+
                 if total_count < conf.SEQ_LENGTH:
                     self.log_train_error(
                         f"[bold red]❌ 模擬資料不足({total_count}<{conf.SEQ_LENGTH})，繼續收集[/]"
                     )
                     continue
+                
                 if self.background_training_task and not self.background_training_task.done():
-                    if delta > 0:
+                    if new_data_available:
                         self.pending_training = True
                         self.log_train("[bold yellow]⚠️ 背景訓練仍在執行，已排隊下一輪訓練[/]")
                     else:
                         self.log_train("[bold yellow]⚠️ 背景訓練仍在執行，先繼續收集[/]")
                     continue
-                if delta <= 0:
+                
+                if not new_data_available:
                     self.log_train("[bold yellow]⚠️ 無新增資料，跳過本輪訓練[/]")
                     continue
-                self.log_train(f">>> [訓練] 啟動背景訓練 (累積 {total_count} 筆)...")
+                
+                self.log_train(f">>> [訓練] 啟動背景訓練...")
                 self.background_training_task = asyncio.create_task(self._run_training_cycle())
         except Exception as e:
             self.log_train_error(f"[bold red]❌ 訓練失敗: {e}[/]", e)
@@ -656,7 +672,7 @@ class CryptoApp(App):
             def on_log(message: str):
                 loop.call_soon_threadsafe(self.log_train, message)
 
-            result, risk = await asyncio.to_thread(
+            result, risk, last_ts = await asyncio.to_thread(
                 train_and_backtest,
                 on_epoch_loss=on_epoch_loss,
                 on_status=on_status,
@@ -677,20 +693,25 @@ class CryptoApp(App):
                 f"MaxDD {risk.max_dd_stop:.2%} / "
                 f"Splits {risk.position_splits}"
             )
-            total_count = self._history_count("data/history.csv")
-            self.trained_rows = total_count
-            self._save_trained_rows(self.trained_rows)
+            
+            # Update last trained timestamp
+            if last_ts > self.last_trained_ts:
+                self.last_trained_ts = last_ts
+                self.log_train(f">>> [訓練] 訓練進度更新至時間戳: {last_ts}")
+            
+            # Legacy cleanup: Remove old trained_rows sync logic if present
+            # self.trained_rows = ... (Removed)
         except Exception as e:
             self.log_train_error(f"[bold red]❌ 背景訓練失敗: {e}[/]", e)
         finally:
             self.training_active = False
             set_stop_training(False)
             if self.pending_training and not should_stop_training():
-                total_count = self._history_count("data/history.csv")
-                delta = max(total_count - self.trained_rows, 0)
-                if delta > 0:
+            if self.pending_training and not should_stop_training():
+                latest_ts = self._get_latest_timestamp("data/history.csv")
+                if latest_ts > self.last_trained_ts:
                     self.pending_training = False
-                    self.log_train(f">>> [訓練] 觸發排隊訓練 (差異 {delta} 筆)...")
+                    self.log_train(f">>> [訓練] 觸發排隊訓練 (New Data: {latest_ts - self.last_trained_ts}ms)...")
                     self.background_training_task = asyncio.create_task(self._run_training_cycle())
 
     async def action_run_bot(self):

@@ -14,7 +14,7 @@ async def main():
     print(">>> Testing AnalystAgent integration...")
     
     # 1. Test Instantiation
-    agent = AnalystAgent(client=None, mode='lstm', symbol='BTCUSDT', interval='15m')
+    agent = AnalystAgent(client=None, mode='lstm', symbol='BTCUSDT', interval='1m')
     # Point to small mock data to avoid loading 500MB history.csv during verification
     agent.strategy.training_data_path = "data/history_mock.csv"
     print("Agent created.")
