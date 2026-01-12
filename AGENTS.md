@@ -138,6 +138,7 @@ graph TD
   - API Key 洩漏檢查
   - 交易邏輯風險檢查
   - Lint / 單元測試 / 回測
+  - 確保測試全程使用uv
 - **Output**: `BUG_REPORT.md`, Security Audit
 
 ---

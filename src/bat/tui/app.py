@@ -1448,6 +1448,20 @@ class CryptoApp(App):
         except Exception:
             return None
 
+    def _load_last_trained_ts(self) -> int:
+        import torch
+        path = "data/lstm_checkpoint.pth"
+        if not os.path.exists(path):
+            return 0
+        try:
+            # Only load meta to be fast
+            checkpoint = torch.load(path, map_location="cpu")
+            meta = checkpoint.get("meta", {})
+            return int(meta.get("last_trained_timestamp", 0))
+        except Exception:
+            return 0
+
+
     def _compute_win_rate_rows(self, rows: list[str], window: int | None = None):
         if len(rows) <= 1:
             return None

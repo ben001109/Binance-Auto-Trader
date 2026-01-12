@@ -23,8 +23,8 @@ def main():
         '--mode',
         type=str,
         default='tui',
-        choices=['tui', 'rsi', 'ml', 'lstm'],
-        help="選擇運行模式: tui (圖形介面, 預設), rsi, ml, lstm (純文字分析模式)"
+        choices=['tui', 'rsi', 'ml', 'lstm', 'verify'],
+        help="選擇運行模式: tui (圖形介面, 預設), rsi, ml, lstm (純文字分析模式), verify (系統驗證)"
     )
 
     args = parser.parse_args()
@@ -50,6 +50,10 @@ def main():
         elif args.mode == "cli": # New CLI mode
             from bat.cli.app import run_cli # Assuming run_cli is in bat.cli.app
             asyncio.run(run_cli())
+        elif args.mode == 'verify':
+            # 系統驗證模式
+            from bat.verifier import Verifier
+            asyncio.run(Verifier.run_verification())
         else:
             # 啟動 CLI 分析模式 (RSI / ML / LSTM)
             from bat.analyzer import run_analysis_module
