@@ -269,6 +269,26 @@ def train_model(
             )
 
     df = df if df is not None else _load_training_data(data_path)
+    
+    # Identify last available timestamp BEFORE processing (which drops tail rows)
+    last_trained_timestamp = 0
+    if "timestamp" in df.columns:
+        # Check if it's already datetime (if passed in as df)
+        if pd.api.types.is_datetime64_any_dtype(df["timestamp"]):
+            # If it's already datetime, convert to ms
+            val = df["timestamp"].max()
+            if pd.notnull(val):
+                last_trained_timestamp = int(val.value // 1_000_000)
+        else:
+             # Assume int ms
+             val = df["timestamp"].max()
+             if pd.notnull(val):
+                 last_trained_timestamp = int(val)
+    elif "close_time" in df.columns:
+         val = df["close_time"].max()
+         if pd.notnull(val):
+             last_trained_timestamp = int(val)
+             
     processor = DataProcessor()
 
     data_scaled, target_scaled, df, target_ret = processor.process_for_training(df, conf.FEATURE_COLS)
@@ -419,6 +439,8 @@ def train_model(
         conf.LR,
     )
 
+    logger.debug("Last trained timestamp identified: %s", last_trained_timestamp)
+
     criterion = nn.CrossEntropyLoss(reduction="none")
     optimizer = torch.optim.Adam(model.parameters(), lr=conf.LR)
     if start_epoch and os.path.exists(_checkpoint_path):
@@ -431,12 +453,13 @@ def train_model(
 
     print(">>> 開始訓練...")
     model.train()
-    for epoch in range(start_epoch, epochs):
+    target_epoch = start_epoch + epochs
+    for epoch in range(start_epoch, target_epoch):
         if should_stop_training():
             logger.warning("Training stopped by user")
             break
         if on_status:
-            on_status({"epoch": epoch + 1, "epochs": epochs})
+            on_status({"epoch": epoch + 1, "epochs": target_epoch})
         total_loss = 0.0
         if use_full_gpu:
             if should_stop_training():
@@ -454,7 +477,7 @@ def train_model(
             logger.debug(
                 "Epoch %s/%s FullBatch Loss=%.8f",
                 epoch + 1,
-                epochs,
+                target_epoch,
                 loss.item(),
             )
             if use_amp:
@@ -573,7 +596,7 @@ def train_model(
                 logger.debug(
                     "Epoch %s/%s Batch %s/%s Loss=%.8f",
                     epoch + 1,
-                    epochs,
+                    target_epoch,
                     batch_idx,
                     len(train_loader),
                     loss.item(),
@@ -606,12 +629,12 @@ def train_model(
                 }
             )
         if (epoch + 1) % 5 == 0:
-            print(f"Epoch {epoch+1}/{epochs}, Loss: {avg_loss:.6f}")
+            print(f"Epoch {epoch+1}/{target_epoch}, Loss: {avg_loss:.6f}")
             logger.debug("Epoch %s avg loss=%.8f", epoch + 1, avg_loss)
-        logger.info("Epoch %s/%s avg loss=%.8f", epoch + 1, epochs, avg_loss)
+        logger.info("Epoch %s/%s avg loss=%.8f", epoch + 1, target_epoch, avg_loss)
         if on_log:
             try:
-                on_log(f">>> [訓練] Epoch {epoch + 1}/{epochs} loss={avg_loss:.6f}")
+                on_log(f">>> [訓練] Epoch {epoch + 1}/{target_epoch} loss={avg_loss:.6f}")
             except Exception: pass
             
         if on_epoch_loss:
@@ -629,7 +652,12 @@ def train_model(
                     "epoch": epoch + 1,
                     "model_state": model.state_dict(),
                     "optimizer_state": optimizer.state_dict(),
-                    "meta": {"input_dim": len(conf.FEATURE_COLS), "output_dim": 3, "loss": avg_loss},
+                    "meta": {
+                        "input_dim": len(conf.FEATURE_COLS),
+                        "output_dim": 3,
+                        "loss": avg_loss,
+                        "last_trained_timestamp": last_trained_timestamp
+                    },
                 },
                 _checkpoint_path,
             )
@@ -644,7 +672,7 @@ def train_model(
     logger.info("Model saved: %s", model_path)
     if on_log:
         on_log(f">>> [訓練] 模型已保存 {model_path}")
-    return model, processor, df
+    return model, processor, df, last_trained_timestamp
 
 
 def train_and_backtest(
@@ -656,7 +684,7 @@ def train_and_backtest(
     status_every=20,
 ):
     df = _load_training_data(data_path)
-    model, processor, df = train_model(
+    model, processor, df, last_trained_ts = train_model(
         data_path=data_path,
         epochs=epochs,
         df=df,
@@ -686,4 +714,4 @@ def train_and_backtest(
         return_equity=True,
     )
 
-    return result, risk
+    return result, risk, last_trained_ts

@@ -21,9 +21,14 @@ def check_data_gaps(df: pd.DataFrame, interval_ms: int) -> list[tuple[int, int]]
     # Convert to int64 (ms) for calculation
     # Only if it's datetime, convert to int (ns) -> ms
     if pd.api.types.is_datetime64_any_dtype(df["timestamp"]):
-        timestamps = df["timestamp"].astype('int64') // 10**6
+        timestamps = (df["timestamp"].astype('int64') // 10**6).values
     else:
-        timestamps = df["timestamp"].astype(int).values
+        # Try to convert to numeric (ms) directly, if fails, try to_datetime first
+        try:
+             timestamps = df["timestamp"].astype(int).values
+        except (ValueError, TypeError):
+             # Handle object column with datetime objects or strings
+             timestamps = (pd.to_datetime(df["timestamp"]).astype('int64') // 10**6).values
     
     gaps = []
     # Diff of timestamps should actally equal interval_ms
@@ -106,7 +111,7 @@ def merge_healed_data(original_df: pd.DataFrame, new_klines_list: list) -> pd.Da
              # Assume ms if int/float, or parse strict
              original_df['timestamp'] = pd.to_datetime(original_df['timestamp'], unit='ms')
         except:
-             pd.to_datetime(original_df['timestamp'])
+             original_df['timestamp'] = pd.to_datetime(original_df['timestamp'])
     
     combined = pd.concat([original_df, new_df])
     # deduplicate by timestamp

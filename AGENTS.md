@@ -102,6 +102,7 @@ graph TD
 每次版本更新（Tagging）前，必須更新 `CHANGELOG.md`：
 - 將 `[Unreleased]` 變更移動到新的版本號標題下。
 - 遵循 "Keep a Changelog" 格式。
+- 所有的錯誤修復都無論是大量修復或是小型修復，都需要開一個版本
 
 ### 4. **Branching Strategy**
 - **clean-repo**: 穩定的生產分支 (Production)。**只接受 PR 合併，禁止直接 Push。**
@@ -137,6 +138,7 @@ graph TD
   - API Key 洩漏檢查
   - 交易邏輯風險檢查
   - Lint / 單元測試 / 回測
+  - 確保測試全程使用uv
 - **Output**: `BUG_REPORT.md`, Security Audit
 
 ---
