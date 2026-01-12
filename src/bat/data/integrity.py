@@ -111,7 +111,7 @@ def merge_healed_data(original_df: pd.DataFrame, new_klines_list: list) -> pd.Da
              # Assume ms if int/float, or parse strict
              original_df['timestamp'] = pd.to_datetime(original_df['timestamp'], unit='ms')
         except:
-             pd.to_datetime(original_df['timestamp'])
+             original_df['timestamp'] = pd.to_datetime(original_df['timestamp'])
     
     combined = pd.concat([original_df, new_df])
     # deduplicate by timestamp
