@@ -1531,6 +1531,26 @@ class CryptoApp(App):
         except Exception:
             return 0
 
+    def _get_latest_timestamp(self, path: str) -> float:
+        try:
+            if not os.path.exists(path):
+                return 0.0
+            import csv
+            from collections import deque
+            with open(path, "r", encoding="utf-8") as f:
+                # Read last non-empty line
+                q = deque(csv.reader(f), maxlen=1)
+                if not q:
+                    return 0.0
+                row = q[0]
+                # Timestamp is usually index 0
+                # Check if it looks numeric
+                if row and row[0].replace('.', '', 1).isdigit():
+                    return float(row[0])
+            return 0.0
+        except Exception:
+            return 0.0
+
     def _load_trained_rows(self) -> int:
         try:
             with open(self.train_progress_path, "r", encoding="utf-8") as handle:
