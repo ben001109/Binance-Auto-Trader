@@ -14,6 +14,10 @@ jobs:
       matrix:
         python-version: ["3.11", "3.12", "3.13"]
 
+    env:
+      TESTNET_API_KEY: ${{ secrets.TESTNET_API_KEY }}
+      TESTNET_API_SECRET: ${{ secrets.TESTNET_API_SECRET }}
+
     steps:
       - uses: actions/checkout@v4
 
@@ -28,8 +32,5 @@ jobs:
       - name: Install dependencies
         run: uv sync --all-extras --dev
 
-      - name: Run Data Integrity Checks
-        run: uv run verify_enhancements.py
-
-      - name: Run Analyst Logic Checks
-        run: uv run verify_analyst.py
+      - name: Run System Verification
+        run: uv run main.py --mode verify
