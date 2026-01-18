@@ -21,3 +21,7 @@ logs/
 *.pth
 *.pt
 *.ckpt
+
+# worktrees
+.worktrees/
+
