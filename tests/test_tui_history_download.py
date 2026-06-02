@@ -143,6 +143,56 @@ class TuiHistoryDownloadTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(observed["start"], "1970-01-01 00:00:00")
         self.assertTrue(backup_exists)
 
+    async def test_stale_zero_metadata_uses_existing_csv_rows_for_resume(self):
+        observed = {"start": None}
+
+        async def fake_historical_klines(*args, **kwargs):
+            observed["start"] = args[3]
+            return []
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cwd = os.getcwd()
+            os.chdir(tmpdir)
+            try:
+                data_dir = Path("data")
+                data_dir.mkdir()
+                (data_dir / "history.csv").write_text(
+                    ",".join(KLINE_HEADERS) + "\n"
+                    "0,1,1,1,1,1,,,,,,\n"
+                    "60000,1,1,1,1,1,,,,,,\n",
+                    encoding="utf-8",
+                )
+                write_history_metadata(
+                    data_dir / "history.meta.json",
+                    "BTCUSDT",
+                    "1m",
+                    row_count=0,
+                    latest_timestamp=0,
+                )
+
+                app = CryptoApp.__new__(CryptoApp)
+                app._read_inputs = lambda: ("BTCUSDT", "1m", "1m", 120, True)
+                app.log_train = lambda *_args, **_kwargs: None
+                app.log_train_error = lambda *_args, **_kwargs: None
+                app._onboard_date_str = lambda _info: "1970-01-01 00:00:00"
+                app._parse_date_ms = lambda _value: 0
+                app._interval_ms_for_klines = lambda _interval: 60_000
+                app._progress_bar = lambda _percent: ""
+                app._update_train_status_threadsafe = lambda *_args, **_kwargs: None
+
+                with patch("bat.tui.app.create_spot_client", return_value=object()), patch(
+                    "bat.tui.app.async_exchange_info",
+                    return_value={},
+                ), patch(
+                    "bat.tui.app.async_historical_klines",
+                    side_effect=fake_historical_klines,
+                ):
+                    await app.action_download_history()
+            finally:
+                os.chdir(cwd)
+
+        self.assertEqual(observed["start"], "1970-01-01 00:02:00")
+
 
 if __name__ == "__main__":
     unittest.main()

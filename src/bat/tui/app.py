@@ -674,7 +674,7 @@ class CryptoApp(App):
             start_ms = self._parse_date_ms(start_str)
             end_ms = int(datetime.now(tz=timezone.utc).timestamp() * 1000)
             interval_ms = self._interval_ms_for_klines(interval)
-            existing_count = self._history_count(history_path)
+            existing_count = self._history_count(history_path, trust_metadata=False)
             has_meta = os.path.exists(history_meta_path)
             if existing_count > 0 and (
                 not has_meta or not history_metadata_matches(history_meta_path, symbol, interval)
@@ -1918,16 +1918,17 @@ class CryptoApp(App):
         except Exception:
             pass
 
-    def _history_count(self, path: str) -> int:
+    def _history_count(self, path: str, *, trust_metadata: bool = True) -> int:
         if not os.path.exists(path):
             return 0
-        metadata = read_history_metadata(history_metadata_path_for_history(path))
-        try:
-            row_count = int(metadata.get("row_count"))
-            if row_count >= 0:
-                return row_count
-        except Exception:
-            pass
+        if trust_metadata:
+            metadata = read_history_metadata(history_metadata_path_for_history(path))
+            try:
+                row_count = int(metadata.get("row_count"))
+                if row_count >= 0:
+                    return row_count
+            except Exception:
+                pass
         try:
             with open(path, "r", encoding="utf-8") as handle:
                 count = max(sum(1 for _ in handle) - 1, 0)
