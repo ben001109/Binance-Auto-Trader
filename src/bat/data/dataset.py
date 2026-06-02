@@ -179,3 +179,50 @@ class TimeSeriesDataset(Dataset):
         else:
             w = float(self.weights[index + self.seq_length - 1])
         return torch.FloatTensor(x), torch.LongTensor([y]), torch.FloatTensor([w])
+
+
+def build_cost_aware_labels(
+    df: pd.DataFrame,
+    horizon: int,
+    fee: float,
+    slippage: float,
+    min_edge: float,
+    close_col: str = "close",
+) -> pd.Series:
+    if horizon < 1:
+        raise ValueError("horizon must be >= 1")
+    future_return = df[close_col].shift(-horizon) / df[close_col] - 1
+    threshold = float(fee) + float(slippage) + float(min_edge)
+    labels = pd.Series(pd.NA, index=df.index, dtype="Int64")
+    known = future_return.notna()
+    labels.loc[known] = 1
+    labels.loc[future_return > threshold] = 2
+    labels.loc[future_return < -threshold] = 0
+    return labels
+
+
+class ResearchSequenceDataset(Dataset):
+    def __init__(self, features, labels, seq_len: int, weights=None):
+        if seq_len < 1:
+            raise ValueError("seq_len must be >= 1")
+        self.features = np.asarray(features, dtype=np.float32)
+        self.labels = np.asarray(labels)
+        self.seq_len = int(seq_len)
+        self.weights = None if weights is None else np.asarray(weights, dtype=np.float32)
+        if len(self.features) != len(self.labels):
+            raise ValueError("features and labels must have the same length")
+        if self.weights is not None and len(self.weights) != len(self.labels):
+            raise ValueError("weights and labels must have the same length")
+
+    def __len__(self):
+        return max(len(self.features) - self.seq_len + 1, 0)
+
+    def __getitem__(self, index):
+        end = index + self.seq_len
+        label_index = end - 1
+        x = torch.from_numpy(self.features[index:end].astype(np.float32, copy=False))
+        y = torch.tensor(int(self.labels[label_index]), dtype=torch.long)
+        if self.weights is None:
+            return x, y
+        w = torch.tensor(float(self.weights[label_index]), dtype=torch.float32)
+        return x, y, w

@@ -55,7 +55,7 @@ class Verifier:
         print("\n[VERIFY] AnalystAgent Integration...")
         
         # 1. Test Instantiation
-        agent = AnalystAgent(client=None, mode='lstm', symbol='BTCUSDT', interval='1m')
+        agent = AnalystAgent(client=MagicMock(name="offline_spot_client"), mode='lstm', symbol='BTCUSDT', interval='1m')
         # Point to small mock data to avoid loading 500MB history.csv during verification
         agent.strategy.training_data_path = "data/history_mock.csv"
         print("   - Agent created.")

@@ -1,6 +1,7 @@
-from bat.config import conf
+import os
 from decimal import Decimal, ROUND_DOWN
 
+from bat.config import conf
 from bat.execution.spot_client import (
     async_account,
     async_exchange_info,
@@ -89,12 +90,16 @@ class BinanceBroker:
             limit=limit
         )
 
-    async def buy(self, quantity=None, quote_qty=None):
+    async def buy(self, quantity=None, quote_qty=None, client_order_id=None):
         """
         執行買入
         quantity: 買多少顆 BTC
         quote_qty: 買多少 USDT 的 BTC (例如買 100 U)
         """
+        if not self._real_trading_interlock_allows_orders():
+            print("❌ 真實交易已封鎖: BAT_ALLOW_REAL_TRADING 未明確授權")
+            self.logger.warning("Buy blocked: real trading interlock not armed")
+            return None
         if not self.client: await self.init_client()
 
         try:
@@ -113,6 +118,7 @@ class BinanceBroker:
                 # 市價單通常用 quoteOrderQty (我想買 100 U) 或 quantity (我想買 0.01 BTC)
                 quantity=quantity,
                 quote_order_qty=quote_qty,
+                new_client_order_id=client_order_id,
             )
             print(f"✅ 買入成功: {order.order_id}")
             self.logger.info("Buy success: %s", order.order_id)
@@ -123,8 +129,12 @@ class BinanceBroker:
             await self.close()
             return None
 
-    async def sell(self, quantity):
+    async def sell(self, quantity, client_order_id=None):
         """執行賣出 (賣出多少顆 BTC)"""
+        if not self._real_trading_interlock_allows_orders():
+            print("❌ 真實交易已封鎖: BAT_ALLOW_REAL_TRADING 未明確授權")
+            self.logger.warning("Sell blocked: real trading interlock not armed")
+            return None
         if not self.client: await self.init_client()
 
         try:
@@ -134,7 +144,8 @@ class BinanceBroker:
                 symbol=self.symbol,
                 side="SELL",
                 type="MARKET",
-                quantity=quantity
+                quantity=quantity,
+                new_client_order_id=client_order_id,
             )
             print(f"✅ 賣出成功: {order.order_id}")
             self.logger.info("Sell success: %s", order.order_id)
@@ -151,6 +162,11 @@ class BinanceBroker:
             if hasattr(self.client, "close_connection"):
                 self.client.close_connection()
             self.client = None
+
+    def _real_trading_interlock_allows_orders(self):
+        if self.is_testnet:
+            return True
+        return os.environ.get("BAT_ALLOW_REAL_TRADING") == "I_UNDERSTAND_REAL_RISK"
 
     async def _load_symbol_info(self):
         if self._symbol_info is None:

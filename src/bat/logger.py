@@ -9,6 +9,8 @@ from datetime import datetime
 from logging.handlers import TimedRotatingFileHandler
 from pathlib import Path
 
+from bat.security.redaction import RedactingFormatter, SensitiveDataFilter, redact_sensitive
+
 LOG_DIR = Path("logs")
 LOG_FILE = LOG_DIR / "bat.log"
 ERROR_FILE = LOG_DIR / "bat.error.log"
@@ -119,10 +121,10 @@ def get_logger(name: str = "bat") -> logging.Logger:
         encoding="utf-8",
     )
 
-    formatter = logging.Formatter(
+    formatter = RedactingFormatter(
         "%(asctime)s | %(levelname)s | %(name)s | %(message)s"
     )
-    debug_formatter = logging.Formatter(
+    debug_formatter = RedactingFormatter(
         "%(asctime)s | %(levelname)s | %(name)s | %(filename)s:%(lineno)d | %(funcName)s | %(message)s"
     )
     info_handler.setFormatter(formatter)
@@ -138,6 +140,10 @@ def get_logger(name: str = "bat") -> logging.Logger:
             return record.levelno < logging.ERROR
 
     info_handler.addFilter(InfoFilter())
+    sensitive_filter = SensitiveDataFilter()
+    info_handler.addFilter(sensitive_filter)
+    error_handler.addFilter(sensitive_filter)
+    debug_handler.addFilter(sensitive_filter)
 
     logger.addHandler(info_handler)
     logger.addHandler(error_handler)
@@ -163,7 +169,7 @@ def write_crash_report(exc_type, exc, tb) -> None:
     with crash_file.open("w", encoding="utf-8") as handle:
         handle.write("=== BAT Crash Report ===\n")
         handle.write(f"Timestamp: {datetime.now().isoformat()}\n\n")
-        handle.write("".join(traceback.format_exception(exc_type, exc, tb)))
+        handle.write(redact_sensitive("".join(traceback.format_exception(exc_type, exc, tb))))
 
 
 def install_crash_handler() -> None:

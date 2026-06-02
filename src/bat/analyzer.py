@@ -15,6 +15,7 @@ from bat.execution.spot_client import async_klines, create_spot_client
 from bat.logger import get_logger
 from bat.models.lstm import CryptoLSTM
 from bat.data.dataset import DataProcessor
+from bat.services.artifact_security import ArtifactSecurityError, load_manifested_torch_state
 from bat.training import RiskParams, suggest_risk_params_from_model, _load_training_data
 from bat.data.integrity import check_data_gaps, heal_data_gaps, merge_healed_data
 
@@ -209,6 +210,14 @@ class LSTMStrategy(BaseStrategy):
     def _load_model(self) -> CryptoLSTM | None:
         if not os.path.exists(self.model_path):
             return None
+        try:
+            state = load_manifested_torch_state(self.model_path, map_location=conf.DEVICE)
+        except ArtifactSecurityError as exc:
+            self.logger.warning(f"Model artifact rejected ({self.model_path}): {exc}")
+            return None
+        except Exception as exc:
+            self.logger.warning(f"Model load failed ({self.model_path}): {exc}")
+            return None
         model = CryptoLSTM(
             input_dim=len(conf.FEATURE_COLS),
             hidden_dim=conf.HIDDEN_SIZE,
@@ -216,7 +225,6 @@ class LSTMStrategy(BaseStrategy):
             dropout=conf.DROPOUT
         ).to(conf.DEVICE)
         try:
-            state = torch.load(self.model_path, map_location=conf.DEVICE)
             model.load_state_dict(state)
         except Exception as exc:
             self.logger.warning(f"Model load failed ({self.model_path}): {exc}")
