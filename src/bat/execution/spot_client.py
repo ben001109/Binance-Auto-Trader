@@ -1,4 +1,5 @@
 import asyncio
+import inspect
 import time
 from datetime import datetime, timezone
 
@@ -121,6 +122,12 @@ async def async_historical_klines(
     start_str: str,
     end_str: str = "now",
     on_progress=None,
+    on_chunk=None,
+    on_retry=None,
+    collect: bool = True,
+    max_retries: int = 3,
+    retry_delay: float = 1.0,
+    request_timeout: float | None = 15.0,
 ):
     start_ms = _parse_date(start_str)
     end_ms = _parse_date(end_str)
@@ -128,26 +135,55 @@ async def async_historical_klines(
     interval_enum = _interval_to_enum(interval)
 
     all_klines = []
+    total = 0
     current = start_ms
 
     while current < end_ms:
-        response = await asyncio.to_thread(
-            client.rest_api.klines,
-            symbol=symbol,
-            interval=interval_enum,
-            start_time=current,
-            end_time=end_ms,
-            limit=KLINES_LIMIT,
-        )
+        attempts = 0
+        while True:
+            try:
+                request = asyncio.create_task(asyncio.to_thread(
+                    client.rest_api.klines,
+                    symbol=symbol,
+                    interval=interval_enum,
+                    start_time=current,
+                    end_time=end_ms,
+                    limit=KLINES_LIMIT,
+                ))
+                if request_timeout is None:
+                    response = await request
+                else:
+                    response = await asyncio.wait_for(request, timeout=request_timeout)
+                break
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                attempts += 1
+                if attempts > max_retries:
+                    raise
+                if on_retry:
+                    result = on_retry(attempts, max_retries, current, exc)
+                    if inspect.isawaitable(result):
+                        await result
+                if retry_delay > 0:
+                    await asyncio.sleep(retry_delay * attempts)
         klines = response.data()
         if not klines:
             break
         normalized = _normalize_klines(klines)
-        all_klines.extend(normalized)
+        if collect:
+            all_klines.extend(normalized)
+        total += len(normalized)
         last_open_time = normalized[-1][0]
         current = last_open_time + step_ms
+        if on_chunk:
+            result = on_chunk(normalized, total, last_open_time, end_ms)
+            if inspect.isawaitable(result):
+                await result
         if on_progress:
-            on_progress(len(all_klines), last_open_time, end_ms)
+            result = on_progress(total, last_open_time, end_ms)
+            if inspect.isawaitable(result):
+                await result
 
         if len(klines) < KLINES_LIMIT:
             break

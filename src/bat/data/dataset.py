@@ -6,6 +6,7 @@ from sklearn.preprocessing import MinMaxScaler
 import numpy as np
 
 from bat.config import conf
+from bat.data.timestamps import normalize_timestamp_series
 
 class DataProcessor:
     def __init__(self):
@@ -57,19 +58,10 @@ class DataProcessor:
         # Create temp series with datetime index
         # Create temp series with datetime index or ensure type
         # Check current type
-        is_dt = pd.api.types.is_datetime64_any_dtype(df['timestamp'])
-        if not is_dt:
-             try:
-                 # Try numeric ms first (most common in this app)
-                 # fix(logic): explicit UTC to match integrity check
-                 df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms', utc=True)
-             except Exception:
-                 try:
-                     # Fallback to auto-parse (for strings)
-                     df['timestamp'] = pd.to_datetime(df['timestamp'])
-                 except Exception:
-                     # Failed to convert, cannot resample
-                     return df
+        try:
+            df['timestamp'] = normalize_timestamp_series(df['timestamp'])
+        except Exception:
+            return df
 
         # Resample logic
         # We set index to timestamp temporarily

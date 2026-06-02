@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 from bat.logger import get_logger
 from bat.config import conf
 from bat.execution.spot_client import async_historical_klines
+from bat.data.timestamps import normalize_timestamp_series
 
 logger = get_logger("bat.data.integrity")
 
@@ -15,20 +16,11 @@ def check_data_gaps(df: pd.DataFrame, interval_ms: int) -> list[tuple[int, int]]
     if df.empty:
         return []
     
-    # Ensure sorted by timestamp
+    df = df.copy()
+    df["timestamp"] = normalize_timestamp_series(df["timestamp"])
     df = df.sort_values("timestamp")
-    
-    # Convert to int64 (ms) for calculation
-    # Only if it's datetime, convert to int (ns) -> ms
-    if pd.api.types.is_datetime64_any_dtype(df["timestamp"]):
-        timestamps = (df["timestamp"].astype('int64') // 10**6).values
-    else:
-        # Try to convert to numeric (ms) directly, if fails, try to_datetime first
-        try:
-             timestamps = df["timestamp"].astype(int).values
-        except (ValueError, TypeError):
-             # Handle object column with datetime objects or strings
-             timestamps = (pd.to_datetime(df["timestamp"]).astype('int64') // 10**6).values
+
+    timestamps = (df["timestamp"].astype("int64") // 10**6).values
     
     gaps = []
     # Diff of timestamps should actally equal interval_ms
@@ -97,7 +89,7 @@ def merge_healed_data(original_df: pd.DataFrame, new_klines_list: list) -> pd.Da
         'timestamp', 'open', 'high', 'low', 'close', 'volume',
         'close_time', 'q_vol', 'trades', 'tb_base', 'tb_quote', 'ignore'
     ])
-    new_df['timestamp'] = pd.to_datetime(new_df['timestamp'], unit='ms')
+    new_df['timestamp'] = normalize_timestamp_series(new_df['timestamp'])
     cols = ['open', 'high', 'low', 'close', 'volume']
     new_df[cols] = new_df[cols].astype(float)
     
@@ -106,12 +98,7 @@ def merge_healed_data(original_df: pd.DataFrame, new_klines_list: list) -> pd.Da
         return new_df.sort_values('timestamp')
 
     # Unify original_df timestamps
-    if not pd.api.types.is_datetime64_any_dtype(original_df['timestamp']):
-        try:
-             # Assume ms if int/float, or parse strict
-             original_df['timestamp'] = pd.to_datetime(original_df['timestamp'], unit='ms')
-        except:
-             original_df['timestamp'] = pd.to_datetime(original_df['timestamp'])
+    original_df['timestamp'] = normalize_timestamp_series(original_df['timestamp'])
     
     combined = pd.concat([original_df, new_df])
     # deduplicate by timestamp

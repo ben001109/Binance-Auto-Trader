@@ -6,6 +6,7 @@ import time
 from typing import Iterable
 
 from bat.config import conf
+from bat.data.timestamps import parse_timestamp_ms
 from bat.execution.broker import BinanceBroker
 from bat.logger import get_logger
 from bat.analyzer import AnalystAgent, compute_order_size, apply_confidence_threshold
@@ -26,6 +27,7 @@ KLINE_HEADERS = [
     "tb_quote",
     "ignore",
 ]
+HISTORY_METADATA_VERSION = 1
 TRADE_HEADERS = [
     "時間戳",
     "交易對",
@@ -367,9 +369,126 @@ def _clear_progress(path: str, key: str) -> None:
         data.pop(key, None)
         with open(path, "w", encoding="utf-8") as handle:
             json.dump(data, handle, ensure_ascii=True, indent=2)
+
+
+def history_metadata_path_for_history(path: str) -> str:
+    root, ext = os.path.splitext(str(path))
+    if ext.lower() == ".csv":
+        return f"{root}.meta.json"
+    return f"{path}.meta.json"
+
+
+def read_history_metadata(path: str) -> dict:
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            payload = json.load(handle)
+        return payload if isinstance(payload, dict) else {}
+    except Exception:
+        return {}
+
+
+def update_history_metadata_stats_for_history(
+    history_path: str,
+    *,
+    row_count: int | None = None,
+    added_rows: int = 0,
+    latest_timestamp: int | float | str | None = None,
+) -> None:
+    meta_path = history_metadata_path_for_history(history_path)
+    payload = read_history_metadata(meta_path)
+    if not payload:
+        return
+    if row_count is not None:
+        payload["row_count"] = max(int(row_count), 0)
+    elif added_rows:
+        try:
+            payload["row_count"] = max(
+                int(payload.get("row_count", 0)) + int(added_rows),
+                0,
+            )
+        except Exception:
+            pass
+    if latest_timestamp is not None:
+        try:
+            payload["latest_timestamp"] = parse_timestamp_ms(latest_timestamp)
+        except Exception:
+            pass
+    payload["updated_at"] = _format_timestamp_ms(int(time.time() * 1000))
+    os.makedirs(os.path.dirname(meta_path) or ".", exist_ok=True)
+    with open(meta_path, "w", encoding="utf-8") as handle:
+        json.dump(payload, handle, ensure_ascii=True, indent=2)
+
+
 def append_kline(path: str, kline: Iterable) -> None:
     _ensure_csv(path, KLINE_HEADERS)
-    _append_row(path, kline)
+    row = list(kline)
+    if row:
+        row[0] = parse_timestamp_ms(row[0])
+    _append_row(path, row)
+    if row:
+        update_history_metadata_stats_for_history(path, added_rows=1, latest_timestamp=row[0])
+
+
+def append_klines(path: str, klines: Iterable[Iterable]) -> int:
+    _ensure_csv(path, KLINE_HEADERS)
+    count = 0
+    latest_timestamp = None
+    with open(path, "a", newline="", encoding="utf-8") as handle:
+        writer = csv.writer(handle)
+        for row in klines:
+            if not row:
+                continue
+            values = list(row)
+            values[0] = parse_timestamp_ms(values[0])
+            writer.writerow(values)
+            count += 1
+            latest_timestamp = values[0]
+    if count:
+        update_history_metadata_stats_for_history(
+            path,
+            added_rows=count,
+            latest_timestamp=latest_timestamp,
+        )
+    return count
+
+
+def write_history_metadata(
+    path: str,
+    symbol: str,
+    interval: str,
+    row_count: int | None = None,
+    latest_timestamp: int | float | str | None = None,
+) -> None:
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    existing = read_history_metadata(path)
+    same_history = (
+        str(existing.get("symbol", "")).upper() == str(symbol).upper()
+        and str(existing.get("interval", "")) == str(interval)
+    )
+    payload = {
+        "version": HISTORY_METADATA_VERSION,
+        "symbol": str(symbol).upper(),
+        "interval": str(interval),
+        "updated_at": _format_timestamp_ms(int(time.time() * 1000)),
+    }
+    if row_count is not None:
+        payload["row_count"] = max(int(row_count), 0)
+    elif same_history and "row_count" in existing:
+        payload["row_count"] = existing["row_count"]
+    if latest_timestamp is not None:
+        payload["latest_timestamp"] = parse_timestamp_ms(latest_timestamp)
+    elif same_history and "latest_timestamp" in existing:
+        payload["latest_timestamp"] = existing["latest_timestamp"]
+    with open(path, "w", encoding="utf-8") as handle:
+        json.dump(payload, handle, ensure_ascii=True, indent=2)
+
+
+def history_metadata_matches(path: str, symbol: str, interval: str) -> bool:
+    payload = read_history_metadata(path)
+    return (
+        str(payload.get("symbol", "")).upper() == str(symbol).upper()
+        and str(payload.get("interval", "")) == str(interval)
+    )
 
 
 def append_trade_event(path: str, row: Iterable) -> None:
@@ -380,12 +499,17 @@ def append_trade_event(path: str, row: Iterable) -> None:
 def write_klines(path: str, klines: Iterable[Iterable], overwrite: bool = True, on_progress=None) -> int:
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     count = 0
+    latest_timestamp = None
     if overwrite:
         with open(path, "w", newline="", encoding="utf-8") as handle:
             writer = csv.writer(handle)
             writer.writerow(list(KLINE_HEADERS))
             for row in klines:
-                writer.writerow(list(row))
+                values = list(row)
+                if values:
+                    values[0] = parse_timestamp_ms(values[0])
+                    latest_timestamp = values[0]
+                writer.writerow(values)
                 count += 1
     else:
         existing = {}
@@ -400,20 +524,30 @@ def write_klines(path: str, klines: Iterable[Iterable], overwrite: bool = True, 
                         for row in reader:
                             if not row:
                                 continue
-                            existing[row[0]] = row
+                            values = list(row)
+                            values[0] = parse_timestamp_ms(values[0])
+                            existing[str(values[0])] = values
             except Exception:
                 existing = {}
         for row in klines:
             if not row:
                 continue
-            existing[str(row[0])] = list(row)
-        merged = sorted(existing.values(), key=lambda item: int(item[0]))
+            values = list(row)
+            values[0] = parse_timestamp_ms(values[0])
+            existing[str(values[0])] = values
+        merged = sorted(existing.values(), key=lambda item: parse_timestamp_ms(item[0]))
         with open(path, "w", newline="", encoding="utf-8") as handle:
             writer = csv.writer(handle)
             writer.writerow(list(KLINE_HEADERS))
             for idx, row in enumerate(merged, start=1):
                 writer.writerow(row)
+                latest_timestamp = row[0]
                 if on_progress and idx % 100000 == 0:
                     on_progress(idx, len(merged))
         count = len(merged)
+    update_history_metadata_stats_for_history(
+        path,
+        row_count=count,
+        latest_timestamp=latest_timestamp,
+    )
     return count
