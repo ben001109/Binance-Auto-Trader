@@ -153,14 +153,7 @@ async def async_historical_klines(
                 if request_timeout is None:
                     response = await request
                 else:
-                    try:
-                        response = await asyncio.wait_for(asyncio.shield(request), timeout=request_timeout)
-                    except asyncio.TimeoutError:
-                        try:
-                            await request
-                        except Exception:
-                            pass
-                        raise
+                    response = await asyncio.wait_for(request, timeout=request_timeout)
                 break
             except asyncio.CancelledError:
                 raise

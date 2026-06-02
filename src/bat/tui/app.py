@@ -1,4 +1,5 @@
 import asyncio
+import csv
 import json
 import os
 import pandas as pd
@@ -688,6 +689,17 @@ class CryptoApp(App):
                     f">>> [歷史] 偵測到交易對/週期切換，舊資料已備份到 {backup_path}"
                 )
                 existing_count = 0
+            elif existing_count > 0 and self._history_has_timestamp_gaps(history_path, interval_ms):
+                backup_suffix = int(time.time())
+                backup_path = f"{history_path}.bak.{backup_suffix}"
+                backup_meta_path = f"{history_meta_path}.bak.{backup_suffix}"
+                os.replace(history_path, backup_path)
+                if has_meta:
+                    os.replace(history_meta_path, backup_meta_path)
+                self.log_train(
+                    f">>> [歷史] 偵測到歷史資料缺口，舊資料已備份到 {backup_path}"
+                )
+                existing_count = 0
             write_history_metadata(history_meta_path, symbol, interval, row_count=existing_count)
 
             existing_latest = int(self._get_latest_timestamp(history_path))
@@ -697,7 +709,7 @@ class CryptoApp(App):
                 latest_timestamp=existing_latest if existing_latest > 0 else None,
             )
             download_start_ms = start_ms
-            if existing_latest >= start_ms:
+            if existing_count > 0 and existing_latest >= start_ms:
                 download_start_ms = existing_latest + interval_ms
             if download_start_ms >= end_ms:
                 count = self._history_count(history_path)
@@ -1923,6 +1935,28 @@ class CryptoApp(App):
             return count
         except Exception:
             return 0
+
+    def _history_has_timestamp_gaps(self, path: str, interval_ms: int) -> bool:
+        if interval_ms <= 0 or not os.path.exists(path):
+            return False
+        previous = None
+        try:
+            with open(path, "r", newline="", encoding="utf-8") as handle:
+                reader = csv.reader(handle)
+                next(reader, None)
+                for row in reader:
+                    if not row:
+                        continue
+                    try:
+                        current = parse_timestamp_ms(row[0])
+                    except Exception:
+                        return True
+                    if previous is not None and current - previous != interval_ms:
+                        return True
+                    previous = current
+        except Exception:
+            return True
+        return False
 
     def _get_latest_timestamp(self, path: str) -> float:
         try:

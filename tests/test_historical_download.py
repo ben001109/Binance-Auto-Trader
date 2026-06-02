@@ -54,33 +54,24 @@ class _HangingThenHealthyClient:
         self.rest_api = _HangingThenHealthyRestAPI()
 
 
-class _OverlapDetectingRestAPI:
+class _SlowFirstRestAPI:
     def __init__(self):
         self.calls = 0
-        self.active = False
-        self.overlapped = False
         self.lock = threading.Lock()
 
     def klines(self, **kwargs):
         with self.lock:
             self.calls += 1
             call_number = self.calls
-            if self.active:
-                self.overlapped = True
-            self.active = True
-        try:
-            if call_number == 1:
-                time.sleep(0.1)
-            start_time = kwargs["start_time"]
-            return _FakeResponse([[start_time], [start_time + 60_000]])
-        finally:
-            with self.lock:
-                self.active = False
+        start_time = kwargs["start_time"]
+        if call_number == 1:
+            time.sleep(0.5)
+        return _FakeResponse([[start_time], [start_time + 60_000]])
 
 
-class _OverlapDetectingClient:
+class _SlowFirstClient:
     def __init__(self):
-        self.rest_api = _OverlapDetectingRestAPI()
+        self.rest_api = _SlowFirstRestAPI()
 
 
 class HistoricalDownloadTest(unittest.IsolatedAsyncioTestCase):
@@ -143,8 +134,9 @@ class HistoricalDownloadTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([row[0] for row in rows], [0, 60_000])
         self.assertEqual(client.rest_api.calls, 2)
 
-    async def test_timeout_retry_does_not_overlap_inflight_request(self):
-        client = _OverlapDetectingClient()
+    async def test_timeout_retry_returns_before_timed_out_request_finishes(self):
+        client = _SlowFirstClient()
+        started = time.perf_counter()
 
         with patch.object(spot_client, "KLINES_LIMIT", 2):
             rows = await spot_client.async_historical_klines(
@@ -158,8 +150,10 @@ class HistoricalDownloadTest(unittest.IsolatedAsyncioTestCase):
                 request_timeout=0.01,
             )
 
+        elapsed = time.perf_counter() - started
         self.assertEqual([row[0] for row in rows], [0, 60_000])
-        self.assertFalse(client.rest_api.overlapped)
+        self.assertEqual(client.rest_api.calls, 2)
+        self.assertLess(elapsed, 0.25)
 
 
 class HistoricalPersistenceTest(unittest.TestCase):
