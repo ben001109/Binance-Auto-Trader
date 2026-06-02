@@ -63,15 +63,6 @@ layout: vertical;
     overflow-y: auto;
 }
 
-#tab_train > .container {
-    overflow-y: auto;
-    height: auto;
-}
-
-#train_controls {
-    min-height: 1;
-}
-
 #tab_charts,
 #tab_market {
     height: 1fr;
@@ -80,13 +71,17 @@ layout: vertical;
 
 #train_controls {
     layout: horizontal;
+    height: 12;
     margin-bottom: 1;
 }
 
 #train_controls_left,
 #train_controls_right {
     width: 1fr;
+    height: 100%;
     margin-right: 1;
+    overflow-y: auto;
+    scrollbar-gutter: stable;
 }
 
 #train_controls_right > Button,
@@ -100,7 +95,10 @@ layout: vertical;
 
 #train_actions {
     layout: vertical;
+    height: 6;
     margin-bottom: 1;
+    overflow-y: auto;
+    scrollbar-gutter: stable;
 }
 
 #train_actions > Button {

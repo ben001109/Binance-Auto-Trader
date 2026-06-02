@@ -50,6 +50,27 @@ class RunManagerTest(unittest.TestCase):
             self.assertEqual(features, ["log_return_1", "RSI_14"])
             self.assertEqual(labels, {"0": 3, "1": 5, "2": 2})
 
+    def test_create_run_makes_duplicate_timestamps_unique(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            first = RunManager(root=tmpdir).create_run(
+                config=ResearchConfig(),
+                model_name="lstm",
+                feature_columns=["a", "b"],
+                label_distribution={0: 1, 1: 1, 2: 1},
+                timestamp="20260102_030405",
+            )
+            second = RunManager(root=tmpdir).create_run(
+                config=ResearchConfig(),
+                model_name="lstm",
+                feature_columns=["a", "b"],
+                label_distribution={0: 1, 1: 1, 2: 1},
+                timestamp="20260102_030405",
+            )
+
+            self.assertNotEqual(first.path, second.path)
+            self.assertTrue(first.path.exists())
+            self.assertTrue(second.path.exists())
+
     def test_save_best_model_writes_pt_file(self):
         model = torch.nn.Linear(2, 3)
         with tempfile.TemporaryDirectory() as tmpdir:

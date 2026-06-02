@@ -1,8 +1,28 @@
 import os
+from dataclasses import dataclass
+
 import torch
 from dotenv import load_dotenv
 
 load_dotenv()
+
+
+@dataclass(frozen=True)
+class DeviceInfo:
+    device: torch.device
+    backend: str
+    label: str
+    icon: str
+    shared_memory: bool = False
+
+    @property
+    def is_accelerated(self) -> bool:
+        return self.backend != "cpu"
+
+    @property
+    def uses_torch_cuda_api(self) -> bool:
+        return self.backend in {"cuda", "rocm"}
+
 
 class Config:
     # API Settings
@@ -93,20 +113,50 @@ class Config:
 
     @property
     def DEVICE(self):
-        if not hasattr(self, '_device'):
-            self._device = self._get_optimal_device()
-        return self._device
+        return self.DEVICE_INFO.device
+
+    @property
+    def DEVICE_INFO(self):
+        if not hasattr(self, '_device_info'):
+            self._device_info = self._get_optimal_device_info()
+        return self._device_info
+
+    @property
+    def DEVICE_BACKEND(self):
+        return self.DEVICE_INFO.backend
+
+    @property
+    def DEVICE_NAME(self):
+        return self.DEVICE_INFO.label
 
     def _get_optimal_device(self):
+        return self._get_optimal_device_info().device
+
+    def _get_optimal_device_info(self):
         if torch.cuda.is_available():
-            print("🚀 使用裝置: NVIDIA CUDA (GPU)")
-            return torch.device("cuda")
-        elif torch.backends.mps.is_available() and torch.backends.mps.is_built():
-            print("🍎 使用裝置: Apple Silicon (MPS/ANE)")
-            return torch.device("mps")
-        else:
-            print("🖥️ 使用裝置: CPU")
-            return torch.device("cpu")
+            hip_version = getattr(getattr(torch, "version", None), "hip", None)
+            if hip_version:
+                info = DeviceInfo(torch.device("cuda"), "rocm", "AMD ROCm", "🚀")
+            else:
+                info = DeviceInfo(torch.device("cuda"), "cuda", "NVIDIA CUDA", "🚀")
+            print(f"{info.icon} 使用裝置: {info.label}")
+            return info
+
+        mps_backend = getattr(getattr(torch, "backends", None), "mps", None)
+        if mps_backend is not None and mps_backend.is_available() and mps_backend.is_built():
+            info = DeviceInfo(torch.device("mps"), "mps", "Apple Silicon MPS", "🍎", shared_memory=True)
+            print(f"{info.icon} 使用裝置: {info.label}")
+            return info
+
+        xpu_backend = getattr(torch, "xpu", None)
+        if xpu_backend is not None and xpu_backend.is_available():
+            info = DeviceInfo(torch.device("xpu"), "xpu", "Intel XPU", "⚡")
+            print(f"{info.icon} 使用裝置: {info.label}")
+            return info
+
+        info = DeviceInfo(torch.device("cpu"), "cpu", "CPU", "🖥️")
+        print(f"{info.icon} 使用裝置: {info.label}")
+        return info
 
     DEFAULT_ASSETS = ["USDT", "BTC", "BNB", "ETH"]
 

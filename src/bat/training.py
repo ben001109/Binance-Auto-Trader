@@ -14,6 +14,7 @@ from bat.models.lstm import CryptoLSTM
 from bat.models.factory import create_model, normalize_model_name
 from bat.data.dataset import DataProcessor, TimeSeriesDataset
 from bat.data.split import IndexWalkForwardFold, purged_walk_forward_indices
+from bat.data.timestamps import parse_timestamp_ms
 from bat.backtest import run_backtest
 from bat.research_config import ResearchConfig, load_research_config, with_model_name
 from bat.services.dataset_service import DatasetService
@@ -99,22 +100,21 @@ def _normalize_data_pipeline(value: str | None) -> str:
 
 
 def _latest_timestamp_from_df(df: pd.DataFrame) -> int:
+    def _latest_from_series(series: pd.Series) -> int:
+        values = []
+        for value in series.dropna():
+            try:
+                values.append(parse_timestamp_ms(value))
+            except Exception:
+                continue
+        return max(values) if values else 0
+
     if "timestamp" in df.columns:
-        series = df["timestamp"].dropna()
-        if series.empty:
-            return 0
-        if pd.api.types.is_datetime64_any_dtype(series):
-            value = series.max()
-            return int(value.value // 1_000_000) if pd.notnull(value) else 0
-        if pd.api.types.is_numeric_dtype(series):
-            value = series.max()
-            return int(value) if pd.notnull(value) else 0
-        parsed = pd.to_datetime(series, utc=True, errors="coerce").dropna()
-        if not parsed.empty:
-            return int(parsed.max().value // 1_000_000)
+        latest = _latest_from_series(df["timestamp"])
+        if latest:
+            return latest
     if "close_time" in df.columns:
-        value = pd.to_numeric(df["close_time"], errors="coerce").max()
-        return int(value) if pd.notnull(value) else 0
+        return _latest_from_series(df["close_time"])
     return 0
 
 
@@ -738,37 +738,58 @@ def _log_return_alignment(
 
 
 def _log_gpu_stats(logger, epoch, batch_idx):
-    if not torch.cuda.is_available():
+    device_backend = getattr(conf, "DEVICE_BACKEND", None)
+    if not isinstance(device_backend, str):
+        device_backend = "rocm" if getattr(getattr(torch, "version", None), "hip", None) else "cuda"
+    if device_backend not in {"cuda", "rocm"} or not torch.cuda.is_available():
         return
+    device_name = getattr(conf, "DEVICE_NAME", None)
+    if not isinstance(device_name, str):
+        device_name = "AMD ROCm" if device_backend == "rocm" else "NVIDIA CUDA"
     allocated = torch.cuda.memory_allocated() / (1024 ** 2)
     reserved = torch.cuda.memory_reserved() / (1024 ** 2)
     logger.debug(
-        "GPU memory: allocated=%.2fMB reserved=%.2fMB (epoch=%s batch=%s)",
+        "%s memory: allocated=%.2fMB reserved=%.2fMB (epoch=%s batch=%s)",
+        device_name,
         allocated,
         reserved,
         epoch,
         batch_idx,
     )
-    if shutil.which("nvidia-smi") is None:
+    smi_command = None
+    smi_label = None
+    if device_backend == "cuda" and shutil.which("nvidia-smi"):
+        smi_command = [
+            "nvidia-smi",
+            "--query-gpu=utilization.gpu,memory.used,memory.total",
+            "--format=csv,noheader,nounits",
+        ]
+        smi_label = "NVIDIA GPU"
+    elif device_backend == "rocm" and shutil.which("rocm-smi"):
+        smi_command = ["rocm-smi", "--showuse", "--showmemuse"]
+        smi_label = "ROCm GPU"
+    if smi_command is None:
         return
     try:
         output = subprocess.check_output(
-            [
-                "nvidia-smi",
-                "--query-gpu=utilization.gpu,memory.used,memory.total",
-                "--format=csv,noheader,nounits",
-            ],
+            smi_command,
             text=True,
             timeout=2,
         ).strip()
         logger.debug(
-            "GPU utilization: %s (epoch=%s batch=%s)",
+            "%s utilization: %s (epoch=%s batch=%s)",
+            smi_label,
             output,
             epoch,
             batch_idx,
         )
     except Exception:
-        logger.debug("GPU utilization: unavailable (epoch=%s batch=%s)", epoch, batch_idx)
+        logger.debug(
+            "%s utilization: unavailable (epoch=%s batch=%s)",
+            smi_label,
+            epoch,
+            batch_idx,
+        )
 
 
 def suggest_risk_params_from_model(
@@ -845,30 +866,42 @@ def train_model(
     if on_log:
         on_log(f">>> [訓練] 開始 (epochs={epochs})")
     device = conf.DEVICE
-    use_amp = device.type == "cuda"
+    device_backend = getattr(conf, "DEVICE_BACKEND", None)
+    if not isinstance(device_backend, str):
+        hip_version = getattr(getattr(torch, "version", None), "hip", None)
+        device_backend = "rocm" if device.type == "cuda" and hip_version else device.type
+    device_name = getattr(conf, "DEVICE_NAME", None)
+    if not isinstance(device_name, str):
+        device_name = str(device).upper()
+    use_amp = device_backend in {"cuda", "rocm"}
     if use_amp:
-        torch.backends.cudnn.benchmark = True
-        logger.info("CUDA enabled: using AMP + cuDNN benchmark")
-        requested_fraction = float(os.getenv("BAT_GPU_MEM_FRACTION", "0.5"))
-        requested_fraction = max(0.1, min(requested_fraction, 0.9))
-        free_mem, total_mem = torch.cuda.mem_get_info()
-        available_fraction = free_mem / total_mem if total_mem else 0.0
-        total_fraction = min(max(available_fraction * requested_fraction, 0.05), 0.9)
-        torch.cuda.set_per_process_memory_fraction(total_fraction)
-        logger.info(
-            "CUDA memory fraction set to %.2f (requested=%.2f of available)",
-            total_fraction,
-            requested_fraction,
-        )
-        if on_status:
-            on_status(
-                {
-                    "gpu_mem_fraction": total_fraction,
-                    "gpu_mem_available_fraction": requested_fraction,
-                    "gpu_mem_free_mb": free_mem / (1024 ** 2),
-                    "gpu_mem_total_mb": total_mem / (1024 ** 2),
-                }
+        if hasattr(torch.backends, "cudnn"):
+            torch.backends.cudnn.benchmark = True
+        logger.info("%s enabled: using AMP + torch CUDA API", device_name)
+        try:
+            requested_fraction = float(os.getenv("BAT_GPU_MEM_FRACTION", "0.5"))
+            requested_fraction = max(0.1, min(requested_fraction, 0.9))
+            free_mem, total_mem = torch.cuda.mem_get_info()
+            available_fraction = free_mem / total_mem if total_mem else 0.0
+            total_fraction = min(max(available_fraction * requested_fraction, 0.05), 0.9)
+            torch.cuda.set_per_process_memory_fraction(total_fraction)
+            logger.info(
+                "%s memory fraction set to %.2f (requested=%.2f of available)",
+                device_name,
+                total_fraction,
+                requested_fraction,
             )
+            if on_status:
+                on_status(
+                    {
+                        "gpu_mem_fraction": total_fraction,
+                        "gpu_mem_available_fraction": requested_fraction,
+                        "gpu_mem_free_mb": free_mem / (1024 ** 2),
+                        "gpu_mem_total_mb": total_mem / (1024 ** 2),
+                    }
+                )
+        except Exception:
+            logger.exception("%s memory limit setup failed; continuing without limit", device_name)
 
     model_config = _resolve_training_model_config(
         research_config or load_research_config(),

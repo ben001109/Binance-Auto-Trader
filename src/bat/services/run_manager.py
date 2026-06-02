@@ -114,8 +114,16 @@ class RunManager:
         symbol = self._safe_name(config.data.symbol)
         interval = self._safe_name(config.data.interval)
         model = self._safe_name(model_name)
-        run_path = self.root / f"{stamp}_{model}_{symbol}_{interval}"
-        run_path.mkdir(parents=True, exist_ok=False)
+        run_name = f"{stamp}_{model}_{symbol}_{interval}"
+        run_path = self.root / run_name
+        suffix = 1
+        while True:
+            try:
+                run_path.mkdir(parents=True, exist_ok=False)
+                break
+            except FileExistsError:
+                suffix += 1
+                run_path = self.root / f"{run_name}_{suffix}"
 
         config_path = run_path / "config.yaml"
         config_path.write_text(

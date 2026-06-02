@@ -16,11 +16,22 @@ from textual.widgets import Button, Header, Footer, Static, RichLog, Label, Inpu
 
 from bat.config import conf
 from bat.data.dataset import DataProcessor
+from bat.data.timestamps import parse_timestamp_ms
 from bat.execution.broker import BinanceBroker
 from bat.execution.order_gateway import OrderGateway
 from bat.execution.spot_client import async_exchange_info, async_exchange_info_all, async_historical_klines, create_spot_client
 from bat.analyzer import AnalystAgent, compute_order_size, apply_confidence_threshold
-from bat.simulation import simulate_and_collect, append_kline, append_trade_event, write_klines
+from bat.simulation import (
+    simulate_and_collect,
+    append_kline,
+    append_klines,
+    append_trade_event,
+    history_metadata_path_for_history,
+    history_metadata_matches,
+    read_history_metadata,
+    update_history_metadata_stats_for_history,
+    write_history_metadata,
+)
 from bat.logger import get_logger, install_crash_handler
 from bat.research_config import RiskConfig, load_research_config
 from bat.risk.live_guard import AccountRiskSnapshot, LiveGuard, OrderIntent
@@ -139,13 +150,10 @@ class PerformanceMonitor(Static):
 
     def update_stats(self) -> None:
         # Hardware Info
-        device_name = str(conf.DEVICE).upper()
-        if "MPS" in device_name:
-            device_icon = "🍎"
-        elif "CUDA" in device_name:
-            device_icon = "🚀"
-        else:
-            device_icon = "🖥️"
+        device_info = conf.DEVICE_INFO
+        device_name = device_info.label
+        device_backend = device_info.backend
+        device_icon = device_info.icon
         
         # RAM Usage
         mem = psutil.virtual_memory()
@@ -164,26 +172,27 @@ class PerformanceMonitor(Static):
         
         # GPU Info
         gpu_info = ""
-        if "CUDA" in device_name and torch.cuda.is_available():
+        if device_backend in {"cuda", "rocm"} and torch.cuda.is_available():
             try:
                 vram_alloc = torch.cuda.memory_allocated() / (1024**3)
                 vram_reserved = torch.cuda.memory_reserved() / (1024**3)
                 gpu_info = f"🎮 VRAM: {vram_alloc:.2f}/{vram_reserved:.2f} GB\n"
             except:
                 pass
-        elif "MPS" in device_name:
+        elif device_backend == "mps":
             # MPS Shared Memory (Unified)
             # torch.mps.current_allocated_memory() might be available in newer builds
             try:
-                # Use getattr to avoid import errors on non-Mac
-                mps_alloc = 0.0
-                if hasattr(torch.backends.mps, "is_available") and torch.backends.mps.is_available():
-                     # Newer pytorch might have stats
-                     pass
-                # For now, just indicate Unified
-                gpu_info = "🎮 VRAM: Unified (See RAM)\n"
+                mps_backend = getattr(torch, "mps", None)
+                if mps_backend is not None and hasattr(mps_backend, "current_allocated_memory"):
+                    mps_alloc = mps_backend.current_allocated_memory() / (1024**3)
+                    gpu_info = f"🎮 VRAM: {mps_alloc:.2f} GB unified\n"
+                else:
+                    gpu_info = "🎮 VRAM: Unified (See RAM)\n"
             except:
                 pass
+        elif device_backend == "xpu":
+            gpu_info = "🎮 VRAM: Intel XPU\n"
 
         content = (
             f"\n[bold underline]系統效能[/]\n"
@@ -209,6 +218,7 @@ class CryptoApp(App):
     equity_series = []
     train_status = {}
     settings_path = "data/settings.json"
+    download_worker = None
     wallet_overview = []
     background_training_task = None
     last_train_ts = 0.0
@@ -509,7 +519,7 @@ class CryptoApp(App):
             self.run_worker(self.action_sell_asset(), exclusive=True)
             return
         if btn_id == "btn_download_history":
-            self.run_worker(self.action_download_history(), exclusive=True)
+            self.download_worker = self.run_worker(self.action_download_history(), exclusive=True)
             return
         if btn_id == "btn_check_dataset":
             self.run_worker(self.action_check_dataset(), exclusive=True)
@@ -537,6 +547,8 @@ class CryptoApp(App):
                 self.model_watch_task.cancel()
             if hasattr(self, "integrity_task") and self.integrity_task and not self.integrity_task.done():
                 self.integrity_task.cancel()
+            if self.download_worker and not self.download_worker.is_finished:
+                self.download_worker.cancel()
 
     async def on_shutdown(self) -> None:
         set_stop_training(True)
@@ -546,6 +558,8 @@ class CryptoApp(App):
             self.background_training_task.cancel()
         if self.model_watch_task and not self.model_watch_task.done():
             self.model_watch_task.cancel()
+        if self.download_worker and not self.download_worker.is_finished:
+            self.download_worker.cancel()
         pending = [self.simulation_future, self.train_collect_future]
         for future in [f for f in pending if f is not None and not f.done()]:
             try:
@@ -647,7 +661,10 @@ class CryptoApp(App):
 
     async def action_download_history(self) -> None:
         symbol, interval, _poll_interval, _sim_steps, is_testnet = self._read_inputs()
+        history_path = "data/history.csv"
+        history_meta_path = "data/history.meta.json"
         try:
+            set_stop_training(False)
             if is_testnet:
                 self.log_train("[歷史] Testnet 模式，改用主網公開資料下載")
             client = create_spot_client(is_testnet=False)
@@ -656,13 +673,62 @@ class CryptoApp(App):
             start_ms = self._parse_date_ms(start_str)
             end_ms = int(datetime.now(tz=timezone.utc).timestamp() * 1000)
             interval_ms = self._interval_ms_for_klines(interval)
-            expected = max(int((end_ms - start_ms) / interval_ms), 1)
-            self.log_train(f">>> [歷史] 下載 {symbol} {interval} 從 {start_str} 開始...")
+            existing_count = self._history_count(history_path)
+            has_meta = os.path.exists(history_meta_path)
+            if existing_count > 0 and (
+                not has_meta or not history_metadata_matches(history_meta_path, symbol, interval)
+            ):
+                backup_suffix = int(time.time())
+                backup_path = f"{history_path}.bak.{backup_suffix}"
+                backup_meta_path = f"{history_meta_path}.bak.{backup_suffix}"
+                os.replace(history_path, backup_path)
+                if has_meta:
+                    os.replace(history_meta_path, backup_meta_path)
+                self.log_train(
+                    f">>> [歷史] 偵測到交易對/週期切換，舊資料已備份到 {backup_path}"
+                )
+                existing_count = 0
+            write_history_metadata(history_meta_path, symbol, interval, row_count=existing_count)
+
+            existing_latest = int(self._get_latest_timestamp(history_path))
+            update_history_metadata_stats_for_history(
+                history_path,
+                row_count=existing_count,
+                latest_timestamp=existing_latest if existing_latest > 0 else None,
+            )
+            download_start_ms = start_ms
+            if existing_latest >= start_ms:
+                download_start_ms = existing_latest + interval_ms
+            if download_start_ms >= end_ms:
+                count = self._history_count(history_path)
+                self.log_train(f"[bold green]✅ 歷史資料已是最新，共 {count} 筆[/]")
+                return
+            download_start_str = datetime.fromtimestamp(
+                download_start_ms / 1000,
+                tz=timezone.utc,
+            ).strftime("%Y-%m-%d %H:%M:%S")
+            expected = max(int((end_ms - download_start_ms) / interval_ms), 1)
+            if download_start_ms > start_ms:
+                self.log_train(
+                    f">>> [歷史] 續接既有資料，從 {download_start_str} 繼續下載..."
+                )
+            else:
+                self.log_train(f">>> [歷史] 下載 {symbol} {interval} 從 {start_str} 開始...")
             last_report = {"percent": 0.0, "rows": 0}
+            persisted = {"rows": 0}
+            try:
+                download_timeout = float(os.getenv("BAT_DOWNLOAD_TIMEOUT", "15"))
+            except ValueError:
+                download_timeout = 15.0
 
             def on_progress(total, current_ms=None, end_ms_value=None):
+                if should_stop_training():
+                    raise asyncio.CancelledError()
                 if current_ms is not None and end_ms_value:
-                    percent = min((current_ms - start_ms) / max(end_ms_value - start_ms, 1), 1.0)
+                    percent = min(
+                        (current_ms - download_start_ms) / max(end_ms_value - download_start_ms, 1),
+                        1.0,
+                    )
                 else:
                     percent = min(total / expected, 1.0)
                 if percent - last_report["percent"] >= 0.01 or total - int(last_report.get("rows", 0)) >= 1000:
@@ -672,40 +738,50 @@ class CryptoApp(App):
                     self.log_train(f">>> [歷史] {bar} 已下載 {total} 筆...")
                     self._update_train_status_threadsafe({"progress": percent, "status": "Downloading"})
 
-            klines = await async_historical_klines(
+            async def on_chunk(rows, _total, _current_ms, _end_ms_value):
+                if should_stop_training():
+                    raise asyncio.CancelledError()
+                saved = await asyncio.to_thread(append_klines, history_path, rows)
+                persisted["rows"] += saved
+
+            def on_retry(attempt, max_retries, current_ms, exc):
+                current_str = datetime.fromtimestamp(current_ms / 1000, tz=timezone.utc).strftime(
+                    "%Y-%m-%d %H:%M:%S"
+                )
+                self.log_train(
+                    f">>> [歷史] 請求逾時/失敗，重試 {attempt}/{max_retries} "
+                    f"({current_str}, {exc.__class__.__name__})"
+                )
+
+            await async_historical_klines(
                 client,
                 symbol,
                 interval,
-                start_str,
+                download_start_str,
                 "now",
                 on_progress=on_progress,
+                on_chunk=on_chunk,
+                on_retry=on_retry,
+                collect=False,
+                max_retries=5,
+                retry_delay=1.0,
+                request_timeout=download_timeout,
             )
-            self.log_train(">>> [歷史] 開始合併與寫入...")
-            loop = asyncio.get_running_loop()
-            last_merge = {"percent": 0.0}
-
-            def on_merge_progress(done, total):
-                if total <= 0:
-                    return
-                percent = min(done / total, 1.0)
-                if percent - last_merge["percent"] < 0.01 and done % 100000 != 0:
-                    return
-                last_merge["percent"] = percent
-                bar = self._progress_bar(percent)
-                loop.call_soon_threadsafe(
-                    self.log_train,
-                    f">>> [歷史] 合併中 {bar} {done}/{total}",
-                )
-                self._update_train_status_threadsafe({"progress": percent, "status": "Merging"})
-
-            count = await asyncio.to_thread(
-                write_klines,
-                "data/history.csv",
-                klines,
-                False,
-                on_merge_progress,
+            count = self._history_count(history_path)
+            latest = int(self._get_latest_timestamp(history_path))
+            write_history_metadata(
+                history_meta_path,
+                symbol,
+                interval,
+                row_count=count,
+                latest_timestamp=latest if latest > 0 else None,
             )
-            self.log_train(f"[bold green]✅ 歷史資料下載完成（已合併）{count} 筆[/]")
+            self.log_train(
+                f"[bold green]✅ 歷史資料下載完成，新增 {persisted['rows']} 筆，總計 {count} 筆[/]"
+            )
+        except asyncio.CancelledError:
+            self.log_train("[bold yellow]⚠️ 歷史資料下載已取消，可再次按下載續接[/]")
+            raise
         except Exception as exc:
             self.log_train_error(f"[bold red]❌ 歷史資料下載失敗: {exc}[/]", exc)
 
@@ -1831,9 +1907,20 @@ class CryptoApp(App):
             pass
 
     def _history_count(self, path: str) -> int:
+        if not os.path.exists(path):
+            return 0
+        metadata = read_history_metadata(history_metadata_path_for_history(path))
+        try:
+            row_count = int(metadata.get("row_count"))
+            if row_count >= 0:
+                return row_count
+        except Exception:
+            pass
         try:
             with open(path, "r", encoding="utf-8") as handle:
-                return max(sum(1 for _ in handle) - 1, 0)
+                count = max(sum(1 for _ in handle) - 1, 0)
+            update_history_metadata_stats_for_history(path, row_count=count)
+            return count
         except Exception:
             return 0
 
@@ -1841,18 +1928,30 @@ class CryptoApp(App):
         try:
             if not os.path.exists(path):
                 return 0.0
-            import csv
-            from collections import deque
-            with open(path, "r", encoding="utf-8") as f:
-                # Read last non-empty line
-                q = deque(csv.reader(f), maxlen=1)
-                if not q:
-                    return 0.0
-                row = q[0]
-                # Timestamp is usually index 0
-                # Check if it looks numeric
-                if row and row[0].replace('.', '', 1).isdigit():
-                    return float(row[0])
+            with open(path, "rb") as handle:
+                handle.seek(0, os.SEEK_END)
+                position = handle.tell()
+                chunks = []
+                while position > 0 and sum(len(chunk) for chunk in chunks) < 1024 * 1024:
+                    read_size = min(8192, position)
+                    position -= read_size
+                    handle.seek(position)
+                    chunks.append(handle.read(read_size))
+                    data = b"".join(reversed(chunks))
+                    lines = data.splitlines()
+                    if len(lines) <= 1 and position > 0:
+                        continue
+                    for raw_line in reversed(lines):
+                        line = raw_line.decode("utf-8", errors="ignore").strip()
+                        if not line or line.startswith("timestamp,"):
+                            continue
+                        timestamp_value = line.split(",", 1)[0].strip().strip('"')
+                        try:
+                            latest = float(parse_timestamp_ms(timestamp_value))
+                            update_history_metadata_stats_for_history(path, latest_timestamp=latest)
+                            return latest
+                        except Exception:
+                            continue
             return 0.0
         except Exception:
             return 0.0
@@ -2274,24 +2373,37 @@ class CryptoApp(App):
             set_stop_training(False)
 
     async def _monitor_gpu_usage(self):
-        if not torch.cuda.is_available():
+        device_backend = conf.DEVICE_BACKEND
+        if device_backend not in {"cuda", "rocm"} or not torch.cuda.is_available():
             return
+        device_name = conf.DEVICE_NAME
         while self.training_active:
             allocated = torch.cuda.memory_allocated() / (1024 ** 2)
             reserved = torch.cuda.memory_reserved() / (1024 ** 2)
-            self.log_train(f"GPU 記憶體: allocated={allocated:.1f}MB reserved={reserved:.1f}MB")
-            if shutil.which("nvidia-smi"):
-                output = await asyncio.to_thread(
-                    subprocess.check_output,
-                    [
-                        "nvidia-smi",
-                        "--query-gpu=utilization.gpu,memory.used,memory.total",
-                        "--format=csv,noheader,nounits",
-                    ],
-                    text=True,
-                )
-                self._update_train_status({"gpu_util": output.strip()})
-                self.log_train(f"GPU 使用率: {output.strip()}")
+            self.log_train(
+                f"{device_name} 記憶體: allocated={allocated:.1f}MB reserved={reserved:.1f}MB"
+            )
+            smi_command = None
+            if device_backend == "cuda" and shutil.which("nvidia-smi"):
+                smi_command = [
+                    "nvidia-smi",
+                    "--query-gpu=utilization.gpu,memory.used,memory.total",
+                    "--format=csv,noheader,nounits",
+                ]
+            elif device_backend == "rocm" and shutil.which("rocm-smi"):
+                smi_command = ["rocm-smi", "--showuse", "--showmemuse"]
+            if smi_command is not None:
+                try:
+                    output = await asyncio.to_thread(
+                        subprocess.check_output,
+                        smi_command,
+                        text=True,
+                        timeout=2,
+                    )
+                    self._update_train_status({"gpu_util": output.strip()})
+                    self.log_train(f"GPU 使用率: {output.strip()}")
+                except Exception:
+                    self.log_train("GPU 使用率: unavailable")
             await asyncio.sleep(5)
 
     async def _sync_time_offset(self):
