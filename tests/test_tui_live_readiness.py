@@ -8,6 +8,7 @@ from unittest.mock import patch
 
 from bat.research_config import RiskConfig
 from bat.risk.live_state import LiveState
+from bat.services.artifact_security import sha256_file
 from bat.tui import app as tui_app
 from bat.tui.app import CryptoApp
 
@@ -159,6 +160,30 @@ class TuiLiveReadinessTest(unittest.TestCase):
 
         self.assertIn("data_ready=", source)
         self.assertIn("_runtime_data_ready", source)
+
+    def test_runtime_model_ready_rejects_non_torch_manifest_type(self):
+        runs_dir = Path("runs")
+        runs_dir.mkdir(exist_ok=True)
+
+        with tempfile.TemporaryDirectory(dir=runs_dir) as tmpdir:
+            artifact = Path(tmpdir) / "best_model.pth"
+            artifact.write_bytes(b"not a torch state")
+            manifest = {
+                "artifacts": {
+                    artifact.name: {
+                        "sha256": sha256_file(artifact),
+                        "type": "sklearn_pickle",
+                        "runtime_load_allowed": True,
+                    }
+                },
+                "admission": {"passed": True},
+            }
+            (Path(tmpdir) / "manifest.json").write_text(
+                json.dumps(manifest),
+                encoding="utf-8",
+            )
+
+            self.assertFalse(tui_app.runtime_model_ready(str(artifact)))
 
 
 if __name__ == "__main__":

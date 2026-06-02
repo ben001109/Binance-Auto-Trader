@@ -120,7 +120,11 @@ def format_live_readiness_status(readiness: LiveReadiness) -> str:
 
 def runtime_model_ready(path: str = "data/lstm_model.pth") -> bool:
     try:
-        verify_manifested_artifact(path, runtime=True)
+        verified = verify_manifested_artifact(path, runtime=True)
+        if verified.path.suffix not in {".pt", ".pth"}:
+            return False
+        if verified.artifact.get("type") not in {"torch_state_dict", "torch_checkpoint"}:
+            return False
         return True
     except (ArtifactSecurityError, OSError):
         return False
