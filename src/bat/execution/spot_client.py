@@ -103,6 +103,10 @@ async def async_wallet_balances(client: Wallet):
 
 async def async_new_order(client: Spot, **kwargs):
     payload = dict(kwargs)
+    if "newClientOrderId" in payload:
+        payload["new_client_order_id"] = payload.pop("newClientOrderId")
+    if payload.get("new_client_order_id") is None:
+        payload.pop("new_client_order_id", None)
     payload["side"] = NewOrderSideEnum(payload["side"])
     payload["type"] = NewOrderTypeEnum(payload["type"])
     payload.setdefault("recv_window", 10000)

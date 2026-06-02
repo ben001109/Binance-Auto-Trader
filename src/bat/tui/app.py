@@ -7,6 +7,7 @@ import subprocess
 import torch
 import psutil
 import time
+from dataclasses import dataclass
 from datetime import datetime, timezone
 
 from textual.app import App, ComposeResult
@@ -16,13 +17,113 @@ from textual.widgets import Button, Header, Footer, Static, RichLog, Label, Inpu
 from bat.config import conf
 from bat.data.dataset import DataProcessor
 from bat.execution.broker import BinanceBroker
+from bat.execution.order_gateway import OrderGateway
 from bat.execution.spot_client import async_exchange_info, async_exchange_info_all, async_historical_klines, create_spot_client
 from bat.analyzer import AnalystAgent, compute_order_size, apply_confidence_threshold
 from bat.simulation import simulate_and_collect, append_kline, append_trade_event, write_klines
 from bat.logger import get_logger, install_crash_handler
+from bat.research_config import RiskConfig, load_research_config
+from bat.risk.live_guard import AccountRiskSnapshot, LiveGuard, OrderIntent
+from bat.risk.live_state import LiveState
+from bat.risk.risk_state import latest_kline_data_age_seconds, risk_state_from_trade_ledger
+from bat.services.artifact_security import ArtifactSecurityError, verify_manifested_artifact
+from bat.services.audit_ledger import AuditLedger
+from bat.services.dataset_service import DatasetService, DatasetSummary
 from bat.training import train_and_backtest, set_stop_training
 from bat.training import should_stop_training
 from bat.tui.line_chart import LineChart
+
+
+def format_dataset_summary(summary: DatasetSummary) -> str:
+    labels = summary.label_distribution
+    warning_text = ""
+    if summary.warnings:
+        warning_text = " | warnings=" + "; ".join(summary.warnings)
+    return (
+        f"rows={summary.rows} | "
+        f"range={summary.start_time}..{summary.end_time} | "
+        f"missing={summary.missing_candles} | "
+        f"nan={summary.nan_count} | "
+        f"features={summary.feature_count} | "
+        f"cache={summary.cache_status} | "
+        f"labels SELL/HOLD/BUY={labels.get(0, 0)}/{labels.get(1, 0)}/{labels.get(2, 0)} | "
+        f"norm={summary.normalization_mode} | "
+        f"seq_len={summary.seq_len} | horizon={summary.horizon} | "
+        f"cost={summary.fee + summary.slippage:.4f} | min_edge={summary.min_edge:.4f}"
+        f"{warning_text}"
+    )
+
+
+def manual_sell_risk_config(is_testnet: bool) -> RiskConfig:
+    if is_testnet:
+        return RiskConfig(
+            live_state=LiveState.CANARY.value,
+            paper_only=False,
+            trading_enabled=True,
+        )
+    return load_research_config().risk
+
+
+def order_audit_ledger(is_testnet: bool) -> AuditLedger:
+    return AuditLedger("data/testnet_order_audit.jsonl" if is_testnet else "data/real_order_audit.jsonl")
+
+
+REAL_TRADING_ARM_PHRASE = "ARM REAL BTCUSDT"
+REAL_TRADING_INTERLOCK_VALUE = "I_UNDERSTAND_REAL_RISK"
+
+
+@dataclass(frozen=True)
+class LiveReadiness:
+    ready: bool
+    reasons: list[str]
+
+
+def safe_persisted_mode(mode: str | None) -> str:
+    return "TESTNET" if str(mode or "TESTNET").upper() == "REAL" else "TESTNET"
+
+
+def real_trading_readiness(
+    *,
+    is_testnet: bool,
+    arm_text: str,
+    risk_config: RiskConfig,
+    env: dict[str, str] | None = None,
+    model_ready: bool = False,
+    data_ready: bool = True,
+) -> LiveReadiness:
+    if is_testnet:
+        return LiveReadiness(ready=True, reasons=[])
+    env = env if env is not None else os.environ
+    reasons: list[str] = []
+    if arm_text.strip() != REAL_TRADING_ARM_PHRASE:
+        reasons.append("real_not_armed")
+    if env.get("BAT_ALLOW_REAL_TRADING") != REAL_TRADING_INTERLOCK_VALUE:
+        reasons.append("missing_real_interlock")
+    if risk_config.live_state != LiveState.CANARY.value:
+        reasons.append("not_canary")
+    if risk_config.paper_only:
+        reasons.append("paper_only")
+    if not risk_config.trading_enabled:
+        reasons.append("trading_disabled")
+    if not model_ready:
+        reasons.append("model_not_ready")
+    if not data_ready:
+        reasons.append("data_not_ready")
+    return LiveReadiness(ready=not reasons, reasons=reasons)
+
+
+def format_live_readiness_status(readiness: LiveReadiness) -> str:
+    if readiness.ready:
+        return "[green]REAL ready: CANARY armed[/]"
+    return "[bold red]REAL blocked[/]: " + ", ".join(readiness.reasons)
+
+
+def runtime_model_ready(path: str = "data/lstm_model.pth") -> bool:
+    try:
+        verify_manifested_artifact(path, runtime=True)
+        return True
+    except (ArtifactSecurityError, OSError):
+        return False
 
 
 class PerformanceMonitor(Static):
@@ -129,8 +230,11 @@ class CryptoApp(App):
     train_collect_future = None
     pending_training = False
     analyst_agent = None
+    real_trading_arm_text = ""
 
     def compose(self) -> ComposeResult:
+        research_config = load_research_config()
+        default_pipeline = research_config.training.data_pipeline
         yield Header()
 
         with Container(id="sidebar"):
@@ -162,6 +266,9 @@ class CryptoApp(App):
             yield Button("🚀 開始交易/查詢餘額", id="btn_paper", variant="success")
             yield Button("🤖 自動交易", id="btn_auto", variant="success")
             yield Button("🛑 停止/重置", id="btn_stop", variant="error")
+            yield Label("REAL 交易解鎖", classes="chart_title")
+            yield Input(value="", placeholder=f"輸入 {REAL_TRADING_ARM_PHRASE}", id="input_real_arm")
+            yield Static(format_live_readiness_status(LiveReadiness(False, ["real_not_armed"])), id="live_readiness_status", markup=True)
             
             yield PerformanceMonitor(id="perf_monitor", classes="box")
 
@@ -215,12 +322,27 @@ class CryptoApp(App):
                         yield Input(value="600", placeholder="Online 波動冷卻秒", id="input_online_vol_cooldown")
                         yield Label("Online 最少成交筆", classes="chart_title")
                         yield Input(value="1", placeholder="Online 最少成交筆", id="input_online_min_trades")
+                        yield Label("資料管線", classes="chart_title")
+                        yield Select(
+                            [("Legacy", "legacy"), ("Research", "research")],
+                            value=default_pipeline if default_pipeline in {"legacy", "research"} else "legacy",
+                            id="select_data_pipeline",
+                        )
+                        yield Label("模型類型", classes="chart_title")
+                        yield Select(
+                            [("LSTM", "lstm"), ("CNN-LSTM", "cnn_lstm"), ("HistGB", "histgb")],
+                            value=research_config.model.name if research_config.model.name in {"lstm", "cnn_lstm", "histgb"} else "lstm",
+                            id="select_model_type",
+                        )
                 yield Label("訓練動作", classes="chart_title")
                 with Container(id="train_actions"):
                     yield Button("⬇️ 下載歷史資料", id="btn_download_history", variant="primary")
+                    yield Button("📊 檢查資料集", id="btn_check_dataset", variant="default")
                     yield Button("🧪 開始模擬蒐集", id="btn_simulate", variant="primary")
                     yield Button("🧠 訓練模型", id="btn_train", variant="warning")
                     yield Button("🧹 重置訓練進度", id="btn_reset_train", variant="default")
+                yield Label("資料集狀態", classes="chart_title")
+                yield Static("尚未檢查", id="dataset_status")
                 yield Label("訓練狀態", classes="chart_title")
                 yield Static("", id="train_status")
                 yield Label("訓練日誌", classes="title")
@@ -385,6 +507,9 @@ class CryptoApp(App):
         if btn_id == "btn_download_history":
             self.run_worker(self.action_download_history(), exclusive=True)
             return
+        if btn_id == "btn_check_dataset":
+            self.run_worker(self.action_check_dataset(), exclusive=True)
+            return
         if btn_id == "btn_reset_train":
             self._reset_training_progress()
             return
@@ -483,6 +608,39 @@ class CryptoApp(App):
             set_stop_training(False)
             await self._sync_time_offset()
 
+    async def action_check_dataset(self):
+        try:
+            self.log_train(">>> [資料] 開始檢查資料集...")
+            config = load_research_config()
+            service = DatasetService(config)
+            prepare = service.prepare_csv_cached if config.training.use_preprocessing_cache else service.prepare_csv
+            prepared = await asyncio.to_thread(prepare, "data/history.csv")
+            message = format_dataset_summary(prepared.summary)
+            self.query_one("#dataset_status", Static).update(message)
+            self.log_train(f">>> [資料] {message}")
+            for warning in prepared.summary.warnings:
+                self.log_train(f"[bold yellow]⚠️ {warning}[/]")
+        except Exception as exc:
+            message = f"資料集檢查失敗: {exc}"
+            self.query_one("#dataset_status", Static).update(message)
+            self.log_train_error(f"[bold red]❌ {message}[/]", exc)
+
+    def _data_pipeline_value(self) -> str:
+        try:
+            value = self.query_one("#select_data_pipeline", Select).value
+        except Exception:
+            value = load_research_config().training.data_pipeline
+        selected = str(value or "legacy").strip().lower()
+        return selected if selected in {"legacy", "research"} else "legacy"
+
+    def _model_type_value(self) -> str:
+        try:
+            value = self.query_one("#select_model_type", Select).value
+        except Exception:
+            value = load_research_config().model.name
+        selected = str(value or "lstm").strip().lower().replace("-", "_")
+        return selected if selected in {"lstm", "cnn_lstm", "histgb"} else "lstm"
+
     async def action_download_history(self) -> None:
         symbol, interval, _poll_interval, _sim_steps, is_testnet = self._read_inputs()
         try:
@@ -552,7 +710,11 @@ class CryptoApp(App):
             self.log_train("[bold yellow]⚠️ 訓練循環已在執行中[/]")
             return
         symbol, interval, poll_interval, sim_steps, _is_testnet = self._read_inputs()
-        self.log_train(">>> [訓練] 啟動收集→背景訓練循環...")
+        data_pipeline = self._data_pipeline_value()
+        model_type = self._model_type_value()
+        self.log_train(
+            f">>> [訓練] 啟動收集→背景訓練循環... pipeline={data_pipeline}, model={model_type}"
+        )
         try:
             set_stop_training(False)
             self.train_loop_active = True
@@ -587,13 +749,15 @@ class CryptoApp(App):
                 count = self._history_count("data/history.csv")
                 if count >= conf.SEQ_LENGTH and current_latest_ts > self.last_trained_ts:
                     self.log_train(f">>> [訓練] 發現新資料 (New since {self.last_trained_ts})...")
-                    await self._run_training_cycle()
+                    await self._run_training_cycle(data_pipeline=data_pipeline, model_name=model_type)
                     self.pretrain_done = True
                     if should_stop_training():
                         return
 
             while self.train_loop_active:
                 symbol, interval, poll_interval, sim_steps, _ = self._read_inputs()
+                data_pipeline = self._data_pipeline_value()
+                model_type = self._model_type_value()
                 await self._maybe_sync_time()
                 if sim_steps < conf.SEQ_LENGTH:
                     sim_steps = conf.SEQ_LENGTH
@@ -644,7 +808,9 @@ class CryptoApp(App):
                     continue
                 
                 self.log_train(f">>> [訓練] 啟動背景訓練...")
-                self.background_training_task = asyncio.create_task(self._run_training_cycle())
+                self.background_training_task = asyncio.create_task(
+                    self._run_training_cycle(data_pipeline=data_pipeline, model_name=model_type)
+                )
         except Exception as e:
             self.log_train_error(f"[bold red]❌ 訓練失敗: {e}[/]", e)
         finally:
@@ -653,10 +819,14 @@ class CryptoApp(App):
             set_stop_training(False)
             await self._sync_time_offset()
 
-    async def _run_training_cycle(self):
+    async def _run_training_cycle(self, data_pipeline=None, model_name=None):
+        selected_pipeline = data_pipeline or self._data_pipeline_value()
+        selected_model = model_name or self._model_type_value()
         try:
             self.training_active = True
-            self.log_train(">>> [訓練] 開始訓練 (背景執行)")
+            self.log_train(
+                f">>> [訓練] 開始訓練 (背景執行, pipeline={selected_pipeline}, model={selected_model})"
+            )
             mem_fraction = self._get_mem_fraction_value()
             os.environ["BAT_GPU_MEM_FRACTION"] = f"{mem_fraction:.2f}"
             os.environ["BAT_BATCH_SIZE"] = str(self._get_batch_size_value())
@@ -677,6 +847,8 @@ class CryptoApp(App):
                 on_epoch_loss=on_epoch_loss,
                 on_status=on_status,
                 on_log=on_log,
+                data_pipeline=selected_pipeline,
+                model_name=selected_model,
                 status_every=self._get_status_every_value(),
             )
             if result.equity_curve:
@@ -711,7 +883,9 @@ class CryptoApp(App):
                 if latest_ts > self.last_trained_ts:
                     self.pending_training = False
                     self.log_train(f">>> [訓練] 觸發排隊訓練 (New Data: {latest_ts - self.last_trained_ts}ms)...")
-                    self.background_training_task = asyncio.create_task(self._run_training_cycle())
+                    self.background_training_task = asyncio.create_task(
+                        self._run_training_cycle(data_pipeline=selected_pipeline, model_name=selected_model)
+                    )
 
     async def action_run_bot(self):
         self.log_msg(">>> [交易] 正在連接 Binance API...")
@@ -742,18 +916,27 @@ class CryptoApp(App):
 
     async def action_auto_trade(self):
         symbol, interval, poll_interval, _, is_testnet = self._read_inputs()
+        if not self._real_trading_ui_ready(is_testnet=is_testnet):
+            return
         base_asset, quote_asset = self._split_symbol(symbol)
         self.auto_trading = True
         self.log_msg(f">>> [自動] 啟動自動交易 ({symbol}, {interval})")
 
         broker = BinanceBroker(is_testnet=is_testnet)
         await broker.init_client()
+        broker.symbol = symbol
+        guard = LiveGuard(load_research_config().risk)
+        order_gateway = OrderGateway(broker, guard, audit_ledger=order_audit_ledger(is_testnet))
         try:
             await self._sync_time_offset()
             if self.model_watch_task is None or self.model_watch_task.done():
                 self.model_watch_task = asyncio.create_task(self._watch_model_ready())
             last_logged_close_time = None
             while self.auto_trading:
+                if not self._real_trading_ui_ready(is_testnet=is_testnet):
+                    self.log_msg("[自動] REAL readiness lost; stopping auto trading")
+                    self.auto_trading = False
+                    break
                 balances = await self._fetch_balances(broker, [base_asset, quote_asset])
                 self._update_user_info(balances)
 
@@ -807,11 +990,55 @@ class CryptoApp(App):
                             f"最大回撤={risk.max_dd_stop:.2%} 分段={risk.position_splits}"
                         )
                     order = None
+                    gateway_result = None
+                    equity_usdt = balances.get(quote_asset, 0.0) + (
+                        balances.get(base_asset, 0.0) * decision.current_price
+                    )
+                    risk_state = risk_state_from_trade_ledger(
+                        "data/testnet_trades.csv" if is_testnet else "data/real_trades.csv",
+                        is_testnet=is_testnet,
+                    )
+                    if not is_testnet and not risk_state.available:
+                        self.log_msg("[自動] 風控狀態不可用，REAL 模式將由 LiveGuard 阻擋")
+                    data_age_seconds = latest_kline_data_age_seconds(klines)
+                    account_risk = AccountRiskSnapshot(
+                        equity_usdt=equity_usdt,
+                        daily_pnl_fraction=risk_state.daily_pnl_fraction,
+                        consecutive_losses=risk_state.consecutive_losses,
+                    )
                     if decision.action == "BUY" and invest > 0:
-                        order = await broker.buy(quote_qty=invest)
+                        if not self._real_trading_ui_ready(is_testnet=is_testnet):
+                            self.log_msg("[自動] REAL readiness lost before BUY submit; stopping auto trading")
+                            self.auto_trading = False
+                            break
+                        intent = OrderIntent(
+                            symbol=symbol,
+                            side="BUY",
+                            quote_qty=invest,
+                            quantity=None,
+                            confidence=decision.confidence,
+                            data_age_seconds=data_age_seconds,
+                        )
+                        gateway_result = await order_gateway.submit(intent, account_risk)
                     elif decision.action == "SELL" and balances.get(base_asset, 0.0) > 0:
+                        if not self._real_trading_ui_ready(is_testnet=is_testnet):
+                            self.log_msg("[自動] REAL readiness lost before SELL submit; stopping auto trading")
+                            self.auto_trading = False
+                            break
                         sell_qty = balances[base_asset] * min(max(market_vol * 5.0, 0.1), 1.0)
-                        order = await broker.sell(quantity=sell_qty)
+                        intent = OrderIntent(
+                            symbol=symbol,
+                            side="SELL",
+                            quote_qty=None,
+                            quantity=sell_qty,
+                            confidence=decision.confidence,
+                            data_age_seconds=data_age_seconds,
+                        )
+                        gateway_result = await order_gateway.submit(intent, account_risk)
+                    if gateway_result is not None:
+                        order = gateway_result.order
+                        if gateway_result.blocked_reason:
+                            self.log_msg(f"[自動] 風控阻擋下單: {gateway_result.blocked_reason}")
                     if is_testnet:
                         append_trade_event(
                             "data/testnet_trades.csv",
@@ -926,6 +1153,51 @@ class CryptoApp(App):
         mode_text = "TESTNET" if is_testnet else "REAL MONEY"
         return f"\n模式: [{mode_color}]{mode_text}[/]"
 
+    def _set_real_trading_arm_text(self, value: str) -> None:
+        self.real_trading_arm_text = value
+        self._update_live_readiness_status()
+
+    def _current_live_readiness(self, is_testnet: bool | None = None) -> LiveReadiness:
+        if is_testnet is None:
+            try:
+                is_testnet = self.query_one("#select_mode", Select).value == "TESTNET"
+            except Exception:
+                is_testnet = conf.IS_TESTNET
+        return real_trading_readiness(
+            is_testnet=bool(is_testnet),
+            arm_text=getattr(self, "real_trading_arm_text", ""),
+            risk_config=load_research_config().risk,
+            model_ready=runtime_model_ready(),
+            data_ready=self._runtime_data_ready(),
+        )
+
+    def _runtime_data_ready(self) -> bool:
+        try:
+            return os.path.exists("data/history.csv") and os.path.getsize("data/history.csv") > 0
+        except OSError:
+            return False
+
+    def _real_trading_ui_ready(self, is_testnet: bool | None = None) -> bool:
+        readiness = self._current_live_readiness(is_testnet=is_testnet)
+        self._update_live_readiness_status(readiness)
+        if readiness.ready:
+            return True
+        self.log_error(f"[REAL] 下單已停用: {', '.join(readiness.reasons)}")
+        return False
+
+    def _update_live_readiness_status(self, readiness: LiveReadiness | None = None) -> None:
+        try:
+            readiness = readiness or self._current_live_readiness()
+            self.query_one("#live_readiness_status", Static).update(
+                format_live_readiness_status(readiness)
+            )
+            is_real = self.query_one("#select_mode", Select).value == "REAL"
+            disabled = is_real and not readiness.ready
+            self.query_one("#btn_auto", Button).disabled = disabled
+            self.query_one("#btn_sell_asset", Button).disabled = disabled
+        except Exception:
+            return
+
     def on_select_changed(self, event: Select.Changed) -> None:
         if event.select.id == "select_mode":
             label = self.query_one("#mode_label", Static)
@@ -939,19 +1211,29 @@ class CryptoApp(App):
         elif event.select.id == "select_risk_profile":
              conf.RISK_PROFILE = str(event.value)
              self.log_msg(f"風險偏好已更新為: {conf.RISK_PROFILE}")
+        self._update_live_readiness_status()
         self._save_settings()
 
     def on_input_changed(self, event: Input.Changed) -> None:
+        if event.input.id == "input_real_arm":
+            self._set_real_trading_arm_text(event.value)
+            return
         if not event.value.strip():
             return
         # Avoid normalizing while typing to prevent cursor jumping.
         return
 
     def on_input_blurred(self, event: Input.Blurred) -> None:
+        if event.input.id == "input_real_arm":
+            self._set_real_trading_arm_text(event.value)
+            return
         self._normalize_input(event.input.id, event.value)
         self._save_settings()
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
+        if event.input.id == "input_real_arm":
+            self._set_real_trading_arm_text(event.value)
+            return
         self._normalize_input(event.input.id, event.value)
         self._save_settings()
 
@@ -1397,12 +1679,32 @@ class CryptoApp(App):
             self.log_error("[賣出] 數量超過可用餘額")
             return
         _, _, _, _, is_testnet = self._read_inputs()
+        if not self._real_trading_ui_ready(is_testnet=is_testnet):
+            return
         broker = BinanceBroker(is_testnet=is_testnet)
         await broker.init_client()
         try:
             broker.symbol = f"{asset}USDT"
-            order = await broker.sell(quantity=amount)
-            if order is not None:
+            guard = LiveGuard(manual_sell_risk_config(is_testnet), allowed_symbol=broker.symbol)
+            order_gateway = OrderGateway(broker, guard, audit_ledger=order_audit_ledger(is_testnet))
+            account_risk = AccountRiskSnapshot(
+                equity_usdt=self.latest_balances.get("USDT", 0.0) if is_testnet else float("nan"),
+                daily_pnl_fraction=0.0 if is_testnet else float("nan"),
+                consecutive_losses=0,
+            )
+            intent = OrderIntent(
+                symbol=broker.symbol,
+                side="SELL",
+                quote_qty=None,
+                quantity=amount,
+                confidence=1.0,
+                data_age_seconds=0.0 if is_testnet else float("nan"),
+            )
+            result = await order_gateway.submit(intent, account_risk)
+            order = result.order
+            if result.blocked_reason:
+                self.log_error(f"[賣出] 風控阻擋: {result.blocked_reason}")
+            elif order is not None:
                 self.log_msg(f"[賣出] 已送出 {asset} 賣單: {amount}")
             else:
                 self.log_error("[賣出] 送單失敗")
@@ -1449,13 +1751,13 @@ class CryptoApp(App):
             return None
 
     def _load_last_trained_ts(self) -> int:
-        import torch
+        from bat.services.artifact_security import safe_torch_load
         path = "data/lstm_checkpoint.pth"
         if not os.path.exists(path):
             return 0
         try:
             # Only load meta to be fast
-            checkpoint = torch.load(path, map_location="cpu")
+            checkpoint = safe_torch_load(path, map_location="cpu")
             meta = checkpoint.get("meta", {})
             return int(meta.get("last_trained_timestamp", 0))
         except Exception:
@@ -1643,7 +1945,7 @@ class CryptoApp(App):
                 data = json.load(handle)
         except Exception:
             data = {}
-        mode_value = data.get("mode", conf.TRADING_MODE)
+        mode_value = safe_persisted_mode(data.get("mode", conf.TRADING_MODE))
         self.query_one("#select_mode", Select).value = mode_value
         symbol_value = data.get("symbol", conf.SYMBOL)
         self.saved_symbol = symbol_value
@@ -1680,6 +1982,7 @@ class CryptoApp(App):
         if self.wallet_sort_mode not in ("amount", "alpha"):
             self.wallet_sort_mode = "amount"
         self._update_wallet_sort_button()
+        self._update_live_readiness_status()
 
     def _read_saved_symbol_value(self):
         try:
@@ -1691,7 +1994,7 @@ class CryptoApp(App):
 
     def _save_settings(self):
         data = {
-            "mode": self.query_one("#select_mode", Select).value,
+            "mode": safe_persisted_mode(self.query_one("#select_mode", Select).value),
             "symbol": self.query_one("#select_symbol", Select).value or conf.SYMBOL,
             "interval": self.query_one("#select_interval", Select).value or conf.INTERVAL,
             "poll_interval": self.query_one("#input_poll_interval", Input).value.strip() or "1m",
@@ -2007,6 +2310,8 @@ class CryptoApp(App):
             exists = os.path.exists(model_path)
             state = "ready" if exists else "missing"
             if state != last_state:
+                self.model_ready = state == "ready"
+                self._update_live_readiness_status()
                 self._update_train_status({"model_status": state})
                 if state == "ready":
                     self.log_msg("[模型] 已偵測到模型，開始使用模型決策")

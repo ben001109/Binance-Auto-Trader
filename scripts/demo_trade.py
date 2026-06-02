@@ -15,7 +15,8 @@ from bat.logger import install_crash_handler
 async def run_demo():
     install_crash_handler()
     # 1. 初始化 Broker
-    broker = BinanceBroker()
+    print("Demo trade is testnet-only; real trading is disabled for this script.")
+    broker = BinanceBroker(is_testnet=True)
     await broker.init_client()
 
     # 2. 檢查帳戶 (測試網通常會送你一些 USDT)

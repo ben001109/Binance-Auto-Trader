@@ -1,0 +1,63 @@
+data:
+  symbol: BTCUSDT
+  interval: 15m
+  seq_len: 60
+  horizon: 4
+  rolling_norm_window: 96
+
+features:
+  use_log_returns: true
+  use_rsi: true
+  use_macd: true
+  use_atr: true
+  use_bollinger_width: true
+  use_volume_features: true
+
+label:
+  mode: classification
+  fee: 0.001
+  slippage: 0.0005
+  min_edge: 0.003
+
+model:
+  name: cnn_lstm
+  cnn_channels: 64
+  kernel_size: 5
+  lstm_hidden: 128
+  lstm_layers: 2
+  dropout: 0.3
+  output_dim: 3
+
+training:
+  data_pipeline: legacy
+  use_preprocessing_cache: true
+  epochs: 50
+  batch_size: 128
+  lr: 0.0001
+  early_stopping_patience: 8
+  early_stopping_metric: expected_return_after_cost
+  class_weight_strength: 1.0
+
+validation:
+  method: walk_forward
+  holdout_ratio: 0.2
+  decision_confidence_threshold: 0.55
+  decision_edge_threshold: 0.0
+  train_window: 90d
+  valid_window: 14d
+  step_window: 14d
+
+backtest:
+  initial_capital: 10000
+  maker_fee: 0.001
+  taker_fee: 0.001
+  slippage: 0.0005
+
+risk:
+  max_drawdown_stop: 0.2
+  max_position_fraction: 0.25
+  stop_loss: 0.03
+  take_profit: 0.06
+  cooldown_after_loss: 3
+  paper_only: true
+  trading_enabled: false

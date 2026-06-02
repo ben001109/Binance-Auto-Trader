@@ -11,7 +11,7 @@ class Config:
     VERSION = '1.0.0'
 
     # Trading Settings
-    SYMBOL = 'BNBUSDT'
+    SYMBOL = 'BTCUSDT'
     INTERVAL = '15m'
     RISK_PROFILE = os.getenv('BAT_RISK_PROFILE', 'STANDARD')  # CONSERVATIVE, STANDARD, AGGRESSIVE
 
