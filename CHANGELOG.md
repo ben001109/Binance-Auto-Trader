@@ -7,9 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.1] - 2026-06-12
+
 ### Fixed
 - **Simulation**: Fixed `AttributeError` caused by unsafe f-string formatting when `risk` is None.
 - **Analysis**: Fixed `ValueError` in LSTM strategy by falling back to simple logic when training data is insufficient for multi-timeframe features.
+- **Data**: Normalized mixed timestamp formats across dataset, integrity checks, training, simulation, and TUI history flows.
+- **History Download**: Streamed and resumable downloads now handle retries, timeouts, cancellation, metadata drift, and internal CSV gaps safely.
+- **Training**: Prevented fast repeated training runs from colliding on identical run directory timestamps.
+- **TUI**: Fixed Train tab scroll layout and improved device reporting for CUDA, ROCm, MPS, and XPU backends.
 
 ## [1.0.0] - 2026-01-10
 
