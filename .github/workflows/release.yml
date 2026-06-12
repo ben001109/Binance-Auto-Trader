@@ -64,7 +64,7 @@ jobs:
               max_release_asset_bytes=2000000000
               if (( archive_size >= max_release_asset_bytes )); then
                 split -b 1900m -d -a 2 "$archive" "$archive.part-"
-                sha256sum "$archive.part-"* > "$archive.sha256"
+                (cd release && sha256sum "BAT-${{ runner.os }}.tar.gz.part-"* > "BAT-${{ runner.os }}.tar.gz.sha256")
                 rm "$archive"
               fi
             fi
