@@ -57,7 +57,17 @@ jobs:
           if [[ "${{ runner.os }}" == "Windows" ]]; then
             powershell Compress-Archive -Path "dist/BAT.exe" -DestinationPath "release/BAT-${{ runner.os }}.zip"
           else
-            tar -czvf "release/BAT-${{ runner.os }}.tar.gz" -C dist BAT
+            archive="release/BAT-${{ runner.os }}.tar.gz"
+            tar -czvf "$archive" -C dist BAT
+            if [[ "${{ runner.os }}" == "Linux" ]]; then
+              archive_size=$(wc -c < "$archive")
+              max_release_asset_bytes=2000000000
+              if (( archive_size >= max_release_asset_bytes )); then
+                split -b 1900m -d -a 2 "$archive" "$archive.part-"
+                sha256sum "$archive.part-"* > "$archive.sha256"
+                rm "$archive"
+              fi
+            fi
           fi
 
       - name: Upload artifacts
@@ -84,4 +94,6 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ inputs.tag_name }}
+          draft: false
+          overwrite_files: true
           files: release/**/*
